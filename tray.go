@@ -353,8 +353,12 @@ var (
 	trayBlueLit = color.RGBA{0x0b, 0x59, 0xce, 0xff}
 	// trayGrey is the same dot, desaturated, for the disabled state.
 	trayGrey = color.RGBA{0x8a, 0x90, 0x97, 0xff}
-	// trayWhite is the glyph colour and the colour of the mute slash.
+	// trayWhite is the glyph colour.
 	trayWhite = color.RGBA{0xff, 0xff, 0xff, 0xff}
+	// trayRed is the mute slash, #e5322d — the exact red the mic-muted and
+	// speaker-muted notification SVGs strike their glyphs through with, so the
+	// tray and the notifications say "muted" in the same colour.
+	trayRed = color.RGBA{0xe5, 0x32, 0x2d, 0xff}
 	// trayOutline is a subtle dark rim so a white glyph survives a light panel.
 	trayOutline = color.RGBA{0x14, 0x16, 0x19, 0xd8}
 )
@@ -389,7 +393,7 @@ func trayDrawDot(cv *trayCanvas, ring, fill color.RGBA) {
 // Every state that is not muted is the same outlined dot, lit blue while
 // talking, washed out while quiet, grey while the mic is disabled and fainter
 // still with no connection. Only the two muted states carry a pictogram — a
-// white microphone or speaker with a single white slash across it, separated
+// white microphone or speaker with a single red slash across it, separated
 // from the glyph by a transparent gap — because those are the only states that
 // have to say *what* is muted.
 func trayDraw(n int, ic Icon) *trayCanvas {
@@ -422,10 +426,11 @@ func trayDraw(n int, ic Icon) *trayCanvas {
 
 	// Punch a transparent gap first, then lay the slash inside it, so the
 	// single line stays legible where it crosses the glyph. The slash gets the
-	// same dark rim as the glyph, for the same reason.
+	// same dark rim as the glyph, for the same reason, and the same red as the
+	// muted notification icons.
 	cv.erase(traySegment(0.15, 0.13, 0.85, 0.87, 0.115, 0.048))
 	cv.fill(traySegment(0.16, 0.14, 0.84, 0.86, 0.115, 0.018), trayOutline)
-	cv.fill(traySegment(0.16, 0.14, 0.84, 0.86, 0.115, 0), trayWhite)
+	cv.fill(traySegment(0.16, 0.14, 0.84, 0.86, 0.115, 0), trayRed)
 	return cv
 }
 

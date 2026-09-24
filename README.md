@@ -144,8 +144,8 @@ The icon is hidden while TeamSpeak isn't running, and follows whichever server h
 | --- | --- |
 | quiet | blue ring |
 | talking | the ring lit up |
-| mic muted | white mic, slashed |
-| speaker muted | white speaker, slashed |
+| mic muted | white mic, red slash |
+| speaker muted | white speaker, red slash |
 | mic disabled (this server doesn't have your mic) | grey ring |
 | TeamSpeak running, no server | faint grey ring |
 
