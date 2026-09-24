@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -456,8 +457,9 @@ func TestNoticeKindsAllHaveASwitch(t *testing.T) {
 // --- batching -------------------------------------------------------------
 
 // TestFlattenNotices covers the flush format: a single notice passes through,
-// several become a counted title and one escaped line each, a shared server
-// suffix is hoisted into the title, and a long batch is cut off.
+// several become a counted title and one numbered, escaped line each in
+// newest-first order, a shared server suffix is hoisted into the title, and a
+// long batch is cut off.
 func TestFlattenNotices(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -466,19 +468,29 @@ func TestFlattenNotices(t *testing.T) {
 		body  string
 	}{
 		{
-			name:  "one passes through",
+			name:  "one passes through unnumbered",
 			in:    []notice{{title: "Mo & co joined your channel", body: "hi &amp; bye"}},
 			title: "Mo & co joined your channel",
 			body:  "hi &amp; bye",
 		},
 		{
-			name: "several, titles escaped for the markup body",
+			name: "several, newest first, titles escaped for the markup body",
 			in: []notice{
 				{title: "<b> joined your channel"},
 				{title: "Mo moved <b> out of your channel", body: "afk"},
 			},
 			title: "2 TeamSpeak events",
-			body:  "&lt;b&gt; joined your channel\nMo moved &lt;b&gt; out of your channel: afk",
+			body:  "1. Mo moved &lt;b&gt; out of your channel: afk\n2. &lt;b&gt; joined your channel",
+		},
+		{
+			name: "three keep arriving order reversed",
+			in: []notice{
+				{title: "A joined your channel"},
+				{title: "B joined your channel"},
+				{title: "C joined your channel"},
+			},
+			title: "3 TeamSpeak events",
+			body:  "1. C joined your channel\n2. B joined your channel\n3. A joined your channel",
 		},
 		{
 			name: "a shared server suffix moves into the title",
@@ -487,7 +499,7 @@ func TestFlattenNotices(t *testing.T) {
 				{title: "B joined your channel — Home"},
 			},
 			title: "2 TeamSpeak events — Home",
-			body:  "A joined your channel — Home\nB joined your channel — Home",
+			body:  "1. B joined your channel — Home\n2. A joined your channel — Home",
 		},
 		{
 			name: "mixed servers leave the title plain",
@@ -496,7 +508,7 @@ func TestFlattenNotices(t *testing.T) {
 				{title: "B joined your channel — Work"},
 			},
 			title: "2 TeamSpeak events",
-			body:  "A joined your channel — Home\nB joined your channel — Work",
+			body:  "1. B joined your channel — Work\n2. A joined your channel — Home",
 		},
 		{
 			name: "no suffix at all leaves the title plain",
@@ -505,12 +517,12 @@ func TestFlattenNotices(t *testing.T) {
 				{title: "B joined your channel"},
 			},
 			title: "2 TeamSpeak events",
-			body:  "A joined your channel\nB joined your channel",
+			body:  "1. B joined your channel\n2. A joined your channel",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			title, body := flattenNotices(tc.in)
+			title, body, _ := flattenNotices(tc.in)
 			if title != tc.title {
 				t.Errorf("title = %q, want %q", title, tc.title)
 			}
@@ -521,13 +533,14 @@ func TestFlattenNotices(t *testing.T) {
 	}
 }
 
-// TestFlattenNoticesCap: past ten lines the rest is summarised.
+// TestFlattenNoticesCap: past ten lines the rest is summarised, and because the
+// newest is line 1 what falls off is the oldest — which the wording has to say.
 func TestFlattenNoticesCap(t *testing.T) {
 	var ns []notice
 	for i := 0; i < 14; i++ {
 		ns = append(ns, notice{title: "line " + strconv.Itoa(i)})
 	}
-	title, body := flattenNotices(ns)
+	title, body, _ := flattenNotices(ns)
 	if title != "14 TeamSpeak events" {
 		t.Errorf("title = %q", title)
 	}
@@ -535,11 +548,139 @@ func TestFlattenNoticesCap(t *testing.T) {
 	if len(lines) != noticeBatchLines+1 {
 		t.Fatalf("body has %d lines, want %d:\n%s", len(lines), noticeBatchLines+1, body)
 	}
-	if lines[0] != "line 0" || lines[9] != "line 9" {
-		t.Errorf("first ten lines = %q", lines[:10])
+	// Newest (line 13) first, counting down to line 4; lines 0..3 are dropped.
+	for i := 0; i < noticeBatchLines; i++ {
+		want := strconv.Itoa(i+1) + ". line " + strconv.Itoa(13-i)
+		if lines[i] != want {
+			t.Errorf("lines[%d] = %q, want %q", i, lines[i], want)
+		}
 	}
-	if lines[10] != "…and 4 more" {
-		t.Errorf("last line = %q, want %q", lines[10], "…and 4 more")
+	if lines[10] != "…and 4 more earlier" {
+		t.Errorf("last line = %q, want %q", lines[10], "…and 4 more earlier")
+	}
+}
+
+// TestFlattenNoticesIcon: the batch shows the newest notice's icon, the one it
+// puts on line 1, and a batch of plain notices asks for no state icon at all.
+func TestFlattenNoticesIcon(t *testing.T) {
+	ns := []notice{
+		{kind: noticeMute, title: "A muted their microphone", icon: IconMicMuted},
+		{kind: noticeMute, title: "B muted their speakers", icon: IconSpeakerMuted},
+		{kind: noticeMute, title: "C unmuted their microphone", icon: IconQuiet},
+	}
+	if _, body, ic := flattenNotices(ns); ic != IconQuiet {
+		t.Errorf("batch icon = %v, want %v (body: %q)", ic, IconQuiet, body)
+	}
+	// One notice passes its own icon through.
+	if _, _, ic := flattenNotices(ns[1:2]); ic != IconSpeakerMuted {
+		t.Errorf("single icon = %v, want %v", ic, IconSpeakerMuted)
+	}
+	// Nothing sets an icon: the sentinel, meaning the app icon.
+	plain := []notice{{title: "A joined your channel"}, {title: "B joined your channel"}}
+	if _, _, ic := flattenNotices(plain); ic != IconNone {
+		t.Errorf("plain batch icon = %v, want %v", ic, IconNone)
+	}
+	if _, _, ic := flattenNotices(nil); ic != IconNone {
+		t.Errorf("empty batch icon = %v, want %v", ic, IconNone)
+	}
+}
+
+// TestNoticeIcon pins the precedence: speakers beat the mic, exactly as the
+// tray's own icon does, and unmuted is the plain ring.
+func TestNoticeIcon(t *testing.T) {
+	tests := []struct {
+		in   [2]bool // {inputMuted, outputMuted}
+		want Icon
+	}{
+		{[2]bool{false, false}, IconQuiet},
+		{[2]bool{true, false}, IconMicMuted},
+		{[2]bool{false, true}, IconSpeakerMuted},
+		{[2]bool{true, true}, IconSpeakerMuted},
+	}
+	for _, tc := range tests {
+		if got := noticeIcon(tc.in); got != tc.want {
+			t.Errorf("noticeIcon(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestRosterMuteIcons walks a client through every mute transition and checks
+// the notice carries the state it ended up in, not the change it made.
+func TestRosterMuteIcons(t *testing.T) {
+	props := func(id int, in, out bool) []byte {
+		return []byte(fmt.Sprintf(
+			`{"type":"clientPropertiesUpdated","payload":{"connectionId":1,"clientId":%d,`+
+				`"properties":{"nickname":"RitzeTest","inputMuted":%t,"outputMuted":%t}}}`,
+			id, in, out))
+	}
+	// Us (7) in channel 5, RitzeTest (9) beside us, nothing muted.
+	newRoster := func() *roster {
+		r := &roster{}
+		r.auth([]byte(`{"connections":[{"id":1,"clientId":7,"properties":{"name":"Home"},
+			"clientInfos":[
+				{"id":7,"channelId":5,"properties":{"nickname":"Me"}},
+				{"id":9,"channelId":5,"properties":{"nickname":"RitzeTest","inputMuted":false,"outputMuted":false}}
+			]}]}`))
+		return r
+	}
+
+	tests := []struct {
+		name      string
+		in, out   bool
+		wantTitle []string
+		wantIcon  Icon
+	}{
+		{"mic muted", true, false,
+			[]string{"RitzeTest muted their microphone"}, IconMicMuted},
+		{"speakers muted", false, true,
+			[]string{"RitzeTest muted their speakers"}, IconSpeakerMuted},
+		{"both muted at once: speakers win",
+			true, true,
+			[]string{"RitzeTest muted their microphone", "RitzeTest muted their speakers"},
+			IconSpeakerMuted},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRoster()
+			ns := r.apply(props(9, tc.in, tc.out))
+			if len(ns) != len(tc.wantTitle) {
+				t.Fatalf("got %d notices, want %d: %+v", len(ns), len(tc.wantTitle), ns)
+			}
+			for i, n := range ns {
+				if n.title != tc.wantTitle[i] {
+					t.Errorf("notice %d title = %q, want %q", i, n.title, tc.wantTitle[i])
+				}
+				if n.icon != tc.wantIcon {
+					t.Errorf("notice %d icon = %v, want %v", i, n.icon, tc.wantIcon)
+				}
+			}
+		})
+	}
+
+	// A full unmute from both-muted is the one transition that ends at the
+	// plain ring: from here the icon says "nothing is muted any more".
+	r := newRoster()
+	r.apply(props(9, true, true))
+	ns := r.apply(props(9, false, false))
+	if len(ns) != 2 {
+		t.Fatalf("full unmute produced %d notices, want 2: %+v", len(ns), ns)
+	}
+	for _, n := range ns {
+		if n.icon != IconQuiet {
+			t.Errorf("%q carries icon %v, want %v", n.title, n.icon, IconQuiet)
+		}
+	}
+
+	// Unmuting only the mic while the speakers stay muted still shows the
+	// speaker icon: the state, not the change.
+	r = newRoster()
+	r.apply(props(9, true, true))
+	ns = r.apply(props(9, false, true))
+	if len(ns) != 1 || ns[0].title != "RitzeTest unmuted their microphone" {
+		t.Fatalf("got %+v, want one mic-unmute notice", ns)
+	}
+	if ns[0].icon != IconSpeakerMuted {
+		t.Errorf("icon = %v, want %v", ns[0].icon, IconSpeakerMuted)
 	}
 }
 
@@ -548,7 +689,7 @@ func TestFlattenNoticesCap(t *testing.T) {
 func TestNoticeBatcherFlush(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
-	b := &noticeBatcher{window: time.Hour, cap: time.Hour, send: func(title, _ string) {
+	b := &noticeBatcher{window: time.Hour, cap: time.Hour, send: func(title, _ string, _ Icon) {
 		mu.Lock()
 		defer mu.Unlock()
 		sent = append(sent, title)

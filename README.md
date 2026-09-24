@@ -75,13 +75,16 @@ Messages and pokes are off because TeamSpeak already pops up its own notificatio
 mute changes and channel chatter are off because they are noisy. Nothing about yourself is
 ever notified, and with more than one server connected the title says which server it came
 from. Every notification carries ts6tray's own icon, unpacked once to
-`~/.cache/ts6tray/ts6tray.svg`.
+`~/.cache/ts6tray/ts6tray.svg` — except a mute notification, which shows the person's *new*
+state as its icon (muted speakers, muted microphone, or the plain ring when they are unmuted
+again), rendered once beside it as `state-*.png`; and a grouped notification, which lists its
+events numbered with the newest first and takes that newest event's icon.
 
 Below the list are two delivery options, both on by default and saved the same way:
 
 | Option | Key | What it does |
 | --- | --- | --- |
-| Group bursts (0.5 s) | `notify.batch` | Waits half a second, and half a second again after each further event, then sends the whole burst as one notification with a line per event. Five people moved at once is one notification, not five. It gives up waiting after 3 s. |
+| Group bursts (0.5 s) | `notify.batch` | Waits half a second, and half a second again after each further event, then sends the whole burst as one notification with a numbered line per event, newest first. Five people moved at once is one notification, not five. It gives up waiting after 3 s. |
 | Replace previous notification | `notify.replace` | Each new notification takes the place of the last one, so only the newest is on screen. |
 
 Kick, ban and timeout wording is best-effort: TeamSpeak has never sent one during a capture,

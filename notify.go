@@ -75,10 +75,30 @@ func (k noticeKind) String() string {
 // length-capped; the body is additionally HTML-escaped, because a freedesktop
 // notification body may be interpreted as markup while the summary/title is
 // always plain text (escaping it would show "Tom&#39;s" verbatim).
+//
+// icon names the artwork the notification server should show. The zero value,
+// IconNone, is the sentinel for "our own app icon": it is never a state a mute
+// notice can report, because a client that is visible at all is connected. Mute
+// notices set it to the mentioned user's *resulting* state, so the picture on
+// screen says what they are now rather than what our own tray shows.
 type notice struct {
 	kind  noticeKind
 	title string
 	body  string
+	icon  Icon
+}
+
+// noticeIcon maps a client's {inputMuted, outputMuted} onto the tray artwork,
+// with the tray's own precedence: speakers first, because a muted speaker makes
+// a muted mic beside the point, then the mic, then the plain unmuted ring.
+func noticeIcon(m [2]bool) Icon {
+	switch {
+	case m[1]:
+		return IconSpeakerMuted
+	case m[0]:
+		return IconMicMuted
+	}
+	return IconQuiet
 }
 
 // Caps on user-controlled text before it is composed (and, for bodies,
@@ -386,12 +406,17 @@ func (r *roster) applyProps(raw json.RawMessage) []notice {
 		return nil
 	}
 	who := r.nickOf(rc, id)
+	ic := noticeIcon(now)
 	var out []notice
 	if was[0] != now[0] {
-		out = append(out, r.mk(rc, noticeMute, who+" "+mutedWord(now[0])+" their microphone", ""))
+		n := r.mk(rc, noticeMute, who+" "+mutedWord(now[0])+" their microphone", "")
+		n.icon = ic
+		out = append(out, n)
 	}
 	if was[1] != now[1] {
-		out = append(out, r.mk(rc, noticeMute, who+" "+mutedWord(now[1])+" their speakers", ""))
+		n := r.mk(rc, noticeMute, who+" "+mutedWord(now[1])+" their speakers", "")
+		n.icon = ic
+		out = append(out, n)
 	}
 	return out
 }
@@ -540,7 +565,7 @@ const (
 type noticeBatcher struct {
 	window time.Duration
 	cap    time.Duration
-	send   func(title, body string)
+	send   func(title, body string, icon Icon)
 
 	mu      sync.Mutex
 	pending []notice
@@ -605,37 +630,49 @@ func (b *noticeBatcher) deliver(ns []notice) {
 	if len(ns) == 0 || b.send == nil {
 		return
 	}
-	title, body := flattenNotices(ns)
-	b.send(title, body)
+	title, body, icon := flattenNotices(ns)
+	b.send(title, body, icon)
 }
 
 // flattenNotices composes one notification out of a batch. A single notice
-// passes through untouched; several become a counted title and one line each.
+// passes through untouched; several become a counted title and one numbered
+// line each, newest first — the thing that just happened is what the user is
+// looking for, and a notification is read from the top.
+//
+// Because the newest is line 1, the lines that fall off the ten-line cap are
+// the *oldest* ones, which the last line says in so many words.
+//
+// The icon returned is the newest notice's, the one shown as line 1.
 //
 // The titles are plain text but the body is markup, so every title has to be
 // escaped on its way into the body. The bodies already are (escapeRunes).
-func flattenNotices(ns []notice) (title, body string) {
+func flattenNotices(ns []notice) (title, body string, icon Icon) {
 	if len(ns) == 0 {
-		return "", ""
+		return "", "", IconNone
 	}
 	if len(ns) == 1 {
-		return ns[0].title, ns[0].body
+		return ns[0].title, ns[0].body, ns[0].icon
 	}
 	title = strconv.Itoa(len(ns)) + " TeamSpeak events"
 	if s := noticeServerSuffix(ns); s != "" {
 		title += " — " + s
 	}
 
-	lines, extra := ns, 0
-	if len(lines) > noticeBatchLines {
-		extra = len(lines) - noticeBatchLines
-		lines = lines[:noticeBatchLines]
+	// Newest first: walk the arrival order backwards. Anything past the cap is
+	// what arrived earliest, so it is dropped from the tail of that walk.
+	shown, extra := len(ns), 0
+	if shown > noticeBatchLines {
+		extra = shown - noticeBatchLines
+		shown = noticeBatchLines
 	}
 	var b strings.Builder
-	for i, n := range lines {
+	for i := 0; i < shown; i++ {
+		n := ns[len(ns)-1-i]
 		if i > 0 {
 			b.WriteByte('\n')
 		}
+		b.WriteString(strconv.Itoa(i + 1))
+		b.WriteString(". ")
 		b.WriteString(html.EscapeString(n.title))
 		if n.body != "" {
 			b.WriteString(": ")
@@ -643,9 +680,9 @@ func flattenNotices(ns []notice) (title, body string) {
 		}
 	}
 	if extra > 0 {
-		b.WriteString("\n…and " + strconv.Itoa(extra) + " more")
+		b.WriteString("\n…and " + strconv.Itoa(extra) + " more earlier")
 	}
-	return title, b.String()
+	return title, b.String(), ns[len(ns)-1].icon
 }
 
 // noticeServerSuffix returns the " — <server>" tail every notice in the batch

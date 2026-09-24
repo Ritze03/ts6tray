@@ -8,9 +8,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/color"
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -768,10 +772,11 @@ func TestTrayOnNoticeRespectsTheSwitches(t *testing.T) {
 
 // --- notification delivery: batching, replacement, the app icon ------------
 
-// notifyCall is one captured Notify, replaces_id included.
+// notifyCall is one captured Notify, replaces_id and icon path included.
 type notifyCall struct {
 	replaces    uint32
 	title, body string
+	icon        string
 }
 
 // newNotifyTray builds a bus-free tray whose notifications land in a slice
@@ -785,10 +790,10 @@ func newNotifyTray(t *testing.T, window, hardCap time.Duration) (*tray, func() [
 	var mu sync.Mutex
 	var calls []notifyCall
 	var next uint32
-	tr.notifyFn = func(replaces uint32, title, body string) uint32 {
+	tr.notifyFn = func(replaces uint32, title, body, icon string) uint32 {
 		mu.Lock()
 		defer mu.Unlock()
-		calls = append(calls, notifyCall{replaces, title, body})
+		calls = append(calls, notifyCall{replaces, title, body, icon})
 		next++
 		if replaces != 0 {
 			return replaces // a server keeps the id it was told to replace
@@ -839,8 +844,9 @@ func TestTrayBatchBurst(t *testing.T) {
 		t.Fatalf("body has %d lines, want 5:\n%s", len(lines), calls[0].body)
 	}
 	for i, l := range lines {
-		if l != "Mo moved &lt;b&gt; into your channel" {
-			t.Errorf("line %d = %q, want the title escaped for markup", i, l)
+		want := strconv.Itoa(i+1) + ". Mo moved &lt;b&gt; into your channel"
+		if l != want {
+			t.Errorf("line %d = %q, want %q", i, l, want)
 		}
 	}
 }
@@ -874,8 +880,8 @@ func TestTrayBatchSlidingWindow(t *testing.T) {
 	if calls[0].title != "2 TeamSpeak events" {
 		t.Errorf("title = %q, want the two notices merged", calls[0].title)
 	}
-	if calls[0].body != "A joined your channel\nB joined your channel" {
-		t.Errorf("body = %q", calls[0].body)
+	if calls[0].body != "1. B joined your channel\n2. A joined your channel" {
+		t.Errorf("body = %q, want B (the newest) first", calls[0].body)
 	}
 }
 
@@ -1045,5 +1051,417 @@ func TestTrayIconFile(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); !bytes.Equal(b, trayIconSVG) {
 		t.Error("a stale icon file was not replaced")
+	}
+}
+
+// --- the per-state notification icons --------------------------------------
+
+// TestTrayStateIconFiles: the three PNGs land in XDG_CACHE_HOME, decode as
+// PNGs of the expected size, and an unchanged file is left alone rather than
+// rewritten — the same contract trayIconFile has.
+func TestTrayStateIconFiles(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+
+	icons, err := trayStateIconFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[Icon]string{
+		IconMicMuted:     filepath.Join(cache, "ts6tray", "state-mic-muted.png"),
+		IconSpeakerMuted: filepath.Join(cache, "ts6tray", "state-speaker-muted.png"),
+		IconQuiet:        filepath.Join(cache, "ts6tray", "state-quiet.png"),
+	}
+	if !reflect.DeepEqual(icons, want) {
+		t.Fatalf("paths = %v, want %v", icons, want)
+	}
+	// No icon is rendered for a state a mute notice can never report.
+	for _, ic := range []Icon{IconNone, IconTalking, IconMicDisabled} {
+		if p, ok := icons[ic]; ok {
+			t.Errorf("%v has a state icon at %q, want none", ic, p)
+		}
+	}
+
+	mods := map[Icon]time.Time{}
+	for ic, p := range icons {
+		fi, serr := os.Stat(p)
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		mods[ic] = fi.ModTime()
+		if fi.Mode().Perm() != 0o644 {
+			t.Errorf("%v: mode %v, want 0644", ic, fi.Mode().Perm())
+		}
+		img := decodePNG(t, p)
+		if b := img.Bounds(); b.Dx() != trayStateIconSize || b.Dy() != trayStateIconSize {
+			t.Errorf("%v: %dx%d, want %dx%d", ic, b.Dx(), b.Dy(),
+				trayStateIconSize, trayStateIconSize)
+		}
+	}
+
+	// Written once: a second call must not touch the files.
+	time.Sleep(10 * time.Millisecond)
+	again, err := trayStateIconFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(again, icons) {
+		t.Errorf("second call = %v, want %v", again, icons)
+	}
+	for ic, p := range icons {
+		fi, serr := os.Stat(p)
+		if serr != nil {
+			t.Fatal(serr)
+		}
+		if !fi.ModTime().Equal(mods[ic]) {
+			t.Errorf("%v was rewritten although its content is unchanged", ic)
+		}
+	}
+}
+
+// decodePNG reads a PNG file, failing the test if it is not one.
+func decodePNG(t *testing.T, path string) image.Image {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, format, err := image.Decode(f)
+	if err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	if format != "png" {
+		t.Fatalf("%s decoded as %q, want png", path, format)
+	}
+	return img
+}
+
+// TestTrayStateIconColours: the rendered PNGs are the tray's own artwork and
+// not, say, an ARGB-vs-RGBA byte shuffle away from it. The quiet ring has to
+// carry the reference blue #0353f4, and both muted glyphs opaque white.
+func TestTrayStateIconColours(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+	icons, err := trayStateIconFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// near reports whether a colour is within tol of want on every channel; the
+	// canvas antialiases, so an exact hit is only sure away from the edges.
+	near := func(r, g, b uint32, want color.RGBA, tol int) bool {
+		d := func(a uint32, w byte) int {
+			v := int(a>>8) - int(w)
+			if v < 0 {
+				return -v
+			}
+			return v
+		}
+		return d(r, want.R) <= tol && d(g, want.G) <= tol && d(b, want.B) <= tol
+	}
+
+	for _, tc := range []struct {
+		ic   Icon
+		want color.RGBA
+		name string
+	}{
+		{IconQuiet, trayBlue, "the ring blue #0353f4"},
+		{IconMicMuted, trayWhite, "white"},
+		{IconSpeakerMuted, trayWhite, "white"},
+	} {
+		img := decodePNG(t, icons[tc.ic])
+		bounds := img.Bounds()
+		hits, opaque := 0, 0
+		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+			for x := bounds.Min.X; x < bounds.Max.X; x++ {
+				r, g, b, a := img.At(x, y).RGBA()
+				if a < 0xf000 {
+					continue // antialiased edge or transparent background
+				}
+				opaque++
+				if near(r, g, b, tc.want, 2) {
+					hits++
+				}
+			}
+		}
+		if opaque == 0 {
+			t.Errorf("%v: every pixel is transparent", tc.ic)
+			continue
+		}
+		if hits < 50 {
+			t.Errorf("%v: only %d of %d opaque pixels are %s — check the ARGB byte order",
+				tc.ic, hits, opaque, tc.name)
+		}
+	}
+
+	// The two muted icons must not be the same picture: the mic and the speaker
+	// say different things.
+	mic, err := trayStatePNG(IconMicMuted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spk, err := trayStatePNG(IconSpeakerMuted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(mic, spk) {
+		t.Error("the mic and speaker state icons are byte-identical")
+	}
+}
+
+// TestTrayNoticeIconPath: a mute notice is sent with its state PNG as the icon,
+// everything else with the app icon, and a batch takes its newest notice's.
+func TestTrayNoticeIconPath(t *testing.T) {
+	tr, got := newNotifyTray(t, 30*time.Millisecond, time.Second)
+	tr.iconPath = "/cache/ts6tray.svg"
+	tr.stateIcons = map[Icon]string{
+		IconMicMuted:     "/cache/state-mic-muted.png",
+		IconSpeakerMuted: "/cache/state-speaker-muted.png",
+		IconQuiet:        "/cache/state-quiet.png",
+	}
+	tr.notif[trayOptBatch] = false
+	tr.notif[trayNotifyKindGroup[noticeMute]] = true
+
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their microphone", icon: IconMicMuted})
+	tr.onNotice(notice{kind: noticeJoin, title: "B joined your channel"})
+	calls := got()
+	if len(calls) != 2 {
+		t.Fatalf("got %d notifications, want 2: %+v", len(calls), calls)
+	}
+	if calls[0].icon != "/cache/state-mic-muted.png" {
+		t.Errorf("mute notice icon = %q, want the mic PNG", calls[0].icon)
+	}
+	if calls[1].icon != "/cache/ts6tray.svg" {
+		t.Errorf("join notice icon = %q, want the app icon", calls[1].icon)
+	}
+
+	// A batch: the newest notice is line 1 and supplies the picture.
+	tr.notif[trayOptBatch] = true
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their microphone", icon: IconMicMuted})
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their speakers", icon: IconSpeakerMuted})
+	tr.onNotice(notice{kind: noticeMute, title: "A unmuted everything", icon: IconQuiet})
+	calls = waitCalls(t, got, 3)
+	last := calls[len(calls)-1]
+	if last.icon != "/cache/state-quiet.png" {
+		t.Errorf("batch icon = %q, want the newest notice's quiet PNG", last.icon)
+	}
+	if !strings.HasPrefix(last.body, "1. A unmuted everything") {
+		t.Errorf("batch body = %q, want the quiet notice on line 1", last.body)
+	}
+
+	// An icon we never rendered falls back to the app icon rather than "".
+	tr.mu.Lock()
+	tr.stateIcons = nil
+	tr.mu.Unlock()
+	tr.notif[trayOptBatch] = false
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their speakers", icon: IconSpeakerMuted})
+	calls = got()
+	if c := calls[len(calls)-1]; c.icon != "/cache/ts6tray.svg" {
+		t.Errorf("unrendered state icon = %q, want the app icon", c.icon)
+	}
+}
+
+// --- menu updates: properties versus layout --------------------------------
+
+// emitCall is one captured D-Bus signal.
+type emitCall struct {
+	path dbus.ObjectPath
+	name string
+	args []any
+}
+
+// newEmitTray is a bus-free tray that looks exported, so refresh() actually
+// emits, and records the signals instead of sending them.
+func newEmitTray(t *testing.T) (*tray, func() []emitCall) {
+	t.Helper()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tr := &tray{
+		click: trayReadClick(trayConfigPath()),
+		notif: trayReadNotify(trayConfigPath()),
+	}
+	var mu sync.Mutex
+	var calls []emitCall
+	tr.emitFn = func(path dbus.ObjectPath, name string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, emitCall{path, name, args})
+	}
+	tr.refresh() // build the rows before anything is watching
+	tr.exported = true
+	return tr, func() []emitCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]emitCall(nil), calls...)
+	}
+}
+
+// propsOfEmit pulls the a(ia{sv}) argument out of an ItemsPropertiesUpdated,
+// checking the removed-properties array is there with the right type.
+func propsOfEmit(t *testing.T, c emitCall) []trayMenuProps {
+	t.Helper()
+	if len(c.args) != 2 {
+		t.Fatalf("%s has %d arguments, want 2", c.name, len(c.args))
+	}
+	upd, ok := c.args[0].([]trayMenuProps)
+	if !ok {
+		t.Fatalf("first argument is %T, want []trayMenuProps", c.args[0])
+	}
+	if _, ok := c.args[1].([]trayMenuRemovedProps); !ok {
+		t.Fatalf("second argument is %T, want []trayMenuRemovedProps", c.args[1])
+	}
+	return upd
+}
+
+// TestTrayToggleEmitsPropertiesOnly: flipping a notification checkmark or a
+// left-click radio changes nothing structural, so the host is told about the
+// one property rather than asked to re-read the whole layout.
+func TestTrayToggleEmitsPropertiesOnly(t *testing.T) {
+	t.Run("notification checkmark", func(t *testing.T) {
+		tr, got := newEmitTray(t)
+		rev := tr.revision
+
+		tr.toggleNotify(trayNotifyGroups[0].key)
+
+		calls := got()
+		if len(calls) != 1 {
+			t.Fatalf("emitted %d signals, want 1: %+v", len(calls), calls)
+		}
+		if calls[0].name != trayMenuIface+".ItemsPropertiesUpdated" {
+			t.Fatalf("emitted %s, want ItemsPropertiesUpdated", calls[0].name)
+		}
+		if calls[0].path != trayMenuPath {
+			t.Errorf("path = %v, want %v", calls[0].path, trayMenuPath)
+		}
+		upd := propsOfEmit(t, calls[0])
+		if len(upd) != 1 {
+			t.Fatalf("updated %d items, want 1: %+v", len(upd), upd)
+		}
+		if upd[0].ID != trayIDNotify0 {
+			t.Errorf("updated id %d, want %d", upd[0].ID, trayIDNotify0)
+		}
+		if len(upd[0].Props) != 1 {
+			t.Errorf("sent %d properties, want only toggle-state: %v", len(upd[0].Props), upd[0].Props)
+		}
+		// The first group defaults to on, so switching it flips it to 0.
+		if v, ok := upd[0].Props["toggle-state"]; !ok || v.Value() != int32(0) {
+			t.Errorf("toggle-state = %v (present: %v), want 0", v.Value(), ok)
+		}
+		if tr.revision <= rev {
+			t.Errorf("revision %d, want it bumped past %d", tr.revision, rev)
+		}
+	})
+
+	t.Run("left-click radios", func(t *testing.T) {
+		tr, got := newEmitTray(t)
+
+		tr.setClick("speaker")
+
+		calls := got()
+		if len(calls) != 1 || calls[0].name != trayMenuIface+".ItemsPropertiesUpdated" {
+			t.Fatalf("emitted %+v, want one ItemsPropertiesUpdated", calls)
+		}
+		// Both radios moved: one off, one on.
+		upd := propsOfEmit(t, calls[0])
+		want := map[int32]int32{trayIDClickMic: 0, trayIDClickSpeaker: 1}
+		if len(upd) != len(want) {
+			t.Fatalf("updated %d items, want %d: %+v", len(upd), len(want), upd)
+		}
+		for _, u := range upd {
+			w, ok := want[u.ID]
+			if !ok {
+				t.Errorf("unexpected item %d in the update", u.ID)
+				continue
+			}
+			if v := u.Props["toggle-state"].Value(); v != w {
+				t.Errorf("item %d toggle-state = %v, want %v", u.ID, v, w)
+			}
+		}
+	})
+}
+
+// TestTrayStructuralChangeEmitsLayoutUpdated: anything that adds, removes or
+// relabels a row still has to be a LayoutUpdated, because a host cannot learn
+// about it from toggle-state alone.
+func TestTrayStructuralChangeEmitsLayoutUpdated(t *testing.T) {
+	t.Run("the bind countdown relabels and disables a row", func(t *testing.T) {
+		tr, got := newEmitTray(t)
+		tr.mu.Lock()
+		tr.binding = "mic"
+		tr.mu.Unlock()
+
+		tr.refresh()
+
+		calls := got()
+		if len(calls) != 1 || calls[0].name != trayMenuIface+".LayoutUpdated" {
+			t.Fatalf("emitted %+v, want one LayoutUpdated", calls)
+		}
+		if len(calls[0].args) != 2 || calls[0].args[1] != trayIDRoot {
+			t.Errorf("args = %v, want (revision, %d)", calls[0].args, trayIDRoot)
+		}
+		if rev, ok := calls[0].args[0].(uint32); !ok || rev != tr.revision {
+			t.Errorf("revision argument = %v, want %d", calls[0].args[0], tr.revision)
+		}
+	})
+
+	t.Run("a server row appearing", func(t *testing.T) {
+		tr, got := newEmitTray(t)
+		tr.mu.Lock()
+		tr.conns = []Conn{{ID: 1, ServerName: "Home", InputHardware: true}}
+		tr.mu.Unlock()
+
+		tr.refresh()
+
+		calls := got()
+		if len(calls) != 1 || calls[0].name != trayMenuIface+".LayoutUpdated" {
+			t.Fatalf("emitted %+v, want one LayoutUpdated", calls)
+		}
+	})
+
+	t.Run("nothing changed: nothing is emitted", func(t *testing.T) {
+		tr, got := newEmitTray(t)
+		tr.refresh()
+		if calls := got(); len(calls) != 0 {
+			t.Fatalf("emitted %+v on an unchanged menu, want nothing", calls)
+		}
+	})
+}
+
+// TestTrayToggleOnlyDiff covers the decision itself, away from the plumbing.
+func TestTrayToggleOnlyDiff(t *testing.T) {
+	base := []trayRow{
+		{id: 24, parent: trayIDSettings, label: "Microphone", enabled: true, radio: true, checked: true},
+		{id: 25, parent: trayIDSettings, label: "Speaker", enabled: true, radio: true},
+	}
+	clone := func() []trayRow { return append([]trayRow(nil), base...) }
+
+	if _, ok := trayToggleOnlyDiff(base, clone()); ok {
+		t.Error("an identical pair reports a toggle diff, want none")
+	}
+
+	flipped := clone()
+	flipped[0].checked, flipped[1].checked = false, true
+	upd, ok := trayToggleOnlyDiff(base, flipped)
+	if !ok || len(upd) != 2 {
+		t.Fatalf("flipped radios: ok=%v upd=%+v, want two updates", ok, upd)
+	}
+
+	relabelled := clone()
+	relabelled[0].label = "Mic"
+	if _, ok := trayToggleOnlyDiff(base, relabelled); ok {
+		t.Error("a relabelled row reports a toggle-only diff")
+	}
+
+	disabled := clone()
+	disabled[0].checked, disabled[0].enabled = false, false
+	if _, ok := trayToggleOnlyDiff(base, disabled); ok {
+		t.Error("a row that also changed enabled reports a toggle-only diff")
+	}
+
+	if _, ok := trayToggleOnlyDiff(base, base[:1]); ok {
+		t.Error("a removed row reports a toggle-only diff")
+	}
+	if _, ok := trayToggleOnlyDiff(nil, base); ok {
+		t.Error("building the rows from nothing reports a toggle-only diff")
 	}
 }

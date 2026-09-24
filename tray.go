@@ -22,7 +22,9 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"image"
 	"image/color"
+	"image/png"
 	"log"
 	"math"
 	"os"
@@ -85,6 +87,86 @@ func trayIconFile() (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// --- the per-state notification icons --------------------------------------
+
+// The three states a mute notification can report, and the file each one is
+// cached under. They are PNGs and not the app SVG because a notification server
+// is only required to handle a path; PNG is the one raster format every one of
+// them reads, and rendering our own artwork keeps the notification and the tray
+// telling the same story with the same picture.
+var trayStateIconNames = map[Icon]string{
+	IconMicMuted:     "state-mic-muted.png",
+	IconSpeakerMuted: "state-speaker-muted.png",
+	IconQuiet:        "state-quiet.png",
+}
+
+// trayStateIconSize is the edge of the rendered PNG. A notification server
+// scales down far better than up, and 64 px is the largest size any of them
+// asks for in practice.
+const trayStateIconSize = 64
+
+// trayStatePNG renders one state with the tray's own painter and encodes it.
+//
+// trayCanvas.pixmap hands back SNI's ARGB32: big-endian, so byte order A, R, G,
+// B, with straight (un-premultiplied) alpha. image.NRGBA is R, G, B, A, also
+// straight — so this is purely a reshuffle of the four bytes, no alpha maths.
+// Getting it wrong is silent: the blue ring comes out orange.
+func trayStatePNG(ic Icon) ([]byte, error) {
+	p := trayDraw(trayStateIconSize*trayOversample, ic).pixmap(trayStateIconSize)
+	img := image.NewNRGBA(image.Rect(0, 0, int(p.Width), int(p.Height)))
+	for i := 0; i+3 < len(p.Data); i += 4 {
+		a, r, g, b := p.Data[i], p.Data[i+1], p.Data[i+2], p.Data[i+3]
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = r, g, b, a
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// trayStateIconFiles renders the three state icons into
+// $XDG_CACHE_HOME/ts6tray/ and returns Icon -> path. Like trayIconFile it
+// rewrites a file only when the bytes differ, so a restart does not churn the
+// cache directory and a server watching those paths sees nothing move.
+func trayStateIconFiles() (map[Icon]string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(base, "ts6tray")
+	out := make(map[Icon]string, len(trayStateIconNames))
+	made := false
+	// Sorted, so the error a caller sees does not depend on map order.
+	icons := make([]Icon, 0, len(trayStateIconNames))
+	for ic := range trayStateIconNames {
+		icons = append(icons, ic)
+	}
+	sort.Slice(icons, func(i, j int) bool { return icons[i] < icons[j] })
+	for _, ic := range icons {
+		path := filepath.Join(dir, trayStateIconNames[ic])
+		data, perr := trayStatePNG(ic)
+		if perr != nil {
+			return out, perr
+		}
+		if old, rerr := os.ReadFile(path); rerr == nil && bytes.Equal(old, data) {
+			out[ic] = path
+			continue
+		}
+		if !made {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return out, err
+			}
+			made = true
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return out, err
+		}
+		out[ic] = path
+	}
+	return out, nil
 }
 
 // --- pixmaps ---------------------------------------------------------------
@@ -461,6 +543,14 @@ type trayMenuProps struct {
 	Props map[string]dbus.Variant
 }
 
+// trayMenuRemovedProps is one entry of ItemsPropertiesUpdated's second
+// argument, a(ias): the properties that went back to their default. We never
+// remove one, but the signal's signature demands the array.
+type trayMenuRemovedProps struct {
+	ID    int32
+	Props []string
+}
+
 // trayMenuEvent is one entry of EventGroup's a(isvu).
 type trayMenuEvent struct {
 	ID        int32
@@ -537,8 +627,13 @@ type tray struct {
 	bindDelay time.Duration // 0 means trayBindDelay
 
 	// notifyFn, when set, takes the place of the D-Bus Notify call. Tests use
-	// it to capture what would have been sent, replaces_id included.
-	notifyFn func(replaces uint32, title, body string) uint32
+	// it to capture what would have been sent, replaces_id and icon path
+	// included.
+	notifyFn func(replaces uint32, title, body, icon string) uint32
+
+	// emitFn, when set, takes the place of conn.Emit. Tests use it to capture
+	// which menu signal a change produced, without a bus.
+	emitFn func(path dbus.ObjectPath, name string, args ...any)
 
 	// batch coalesces bursts of event notices; nil means send each one at once.
 	batch *noticeBatcher
@@ -558,6 +653,7 @@ type tray struct {
 	lastNotify      time.Time
 	warnedNoWatcher bool
 	iconPath        string          // cached app icon, "" when it could not be written
+	stateIcons      map[Icon]string // rendered per-state notification PNGs, by Icon
 	lastEventID     uint32          // id of the last event notification, for replaces_id
 	click           string          // left-click target: "mic" or "speaker"
 	notif           map[string]bool // Settings -> Notifications switches, by group key
@@ -857,7 +953,7 @@ func (t *tray) onNotice(n notice) {
 		t.batch.add(n)
 		return
 	}
-	t.notifyEvent(n.title, n.body)
+	t.notifyEvent(n.title, n.body, n.icon)
 }
 
 // refresh rebuilds the rows from the current state and, if they moved, bumps
@@ -866,7 +962,8 @@ func (t *tray) onNotice(n notice) {
 func (t *tray) refresh() {
 	t.mu.Lock()
 	rows := trayRowsFor(t.conns, t.click, t.binding, t.notif)
-	changed := !trayRowsEqual(t.rows, rows)
+	old := t.rows
+	changed := !trayRowsEqual(old, rows)
 	if changed {
 		t.rows = rows
 		t.revision++
@@ -874,8 +971,64 @@ func (t *tray) refresh() {
 	rev, exported := t.revision, t.exported
 	t.mu.Unlock()
 	if changed && exported {
-		t.emit(trayMenuPath, trayMenuIface+".LayoutUpdated", rev, trayIDRoot)
+		t.emitMenuChange(old, rows, rev)
 	}
+}
+
+// emitMenuChange tells the host what moved, in the smallest terms that say it.
+//
+// A checkmark or a radio flipping changes nothing about the menu's shape, so it
+// goes out as ItemsPropertiesUpdated carrying only the new toggle-state of the
+// rows that flipped. LayoutUpdated is what a host answers by fetching the whole
+// layout again, which for a click on a checkbox is a rebuild of every row to
+// move one tick — and some hosts close the open menu over it.
+//
+// Anything structural — a server row appearing, a bind countdown relabelling
+// and disabling its row, a row added or removed — still needs LayoutUpdated,
+// because the host cannot learn about it from properties alone. The revision is
+// bumped either way, so a host that re-reads the layout for its own reasons
+// never sees a stale number.
+func (t *tray) emitMenuChange(old, rows []trayRow, rev uint32) {
+	if upd, ok := trayToggleOnlyDiff(old, rows); ok {
+		t.emit(trayMenuPath, trayMenuIface+".ItemsPropertiesUpdated",
+			upd, []trayMenuRemovedProps{})
+		return
+	}
+	t.emit(trayMenuPath, trayMenuIface+".LayoutUpdated", rev, trayIDRoot)
+}
+
+// trayToggleOnlyDiff reports whether old and rows differ in nothing but the
+// toggle-state of some rows, and if so returns just those rows' new state as
+// ItemsPropertiesUpdated's a(ia{sv}).
+//
+// ok is false for an identical pair too: there is then nothing to send, and the
+// caller only reaches this after establishing that something did change.
+func trayToggleOnlyDiff(old, rows []trayRow) ([]trayMenuProps, bool) {
+	if len(old) != len(rows) {
+		return nil, false
+	}
+	var upd []trayMenuProps
+	for i := range rows {
+		if old[i] == rows[i] {
+			continue
+		}
+		// Everything except checked has to match: compare the old row with its
+		// checked flag set to the new one's, which leaves exactly that field out.
+		was := old[i]
+		was.checked = rows[i].checked
+		if was != rows[i] {
+			return nil, false
+		}
+		state := int32(0)
+		if rows[i].checked {
+			state = 1
+		}
+		upd = append(upd, trayMenuProps{
+			ID:    rows[i].id,
+			Props: map[string]dbus.Variant{"toggle-state": dbus.MakeVariant(state)},
+		})
+	}
+	return upd, len(upd) > 0
 }
 
 // RunTray runs the StatusNotifierItem until ctx is done. It never returns an
@@ -909,6 +1062,14 @@ func RunTray(ctx context.Context, c *TSClient, quit func()) error {
 	} else {
 		t.iconPath = path
 	}
+	// The mute notifications want the mentioned user's state as their picture,
+	// so the three states are rendered once here. A failure is not fatal: every
+	// notification simply keeps the app icon.
+	icons, ierr := trayStateIconFiles()
+	if ierr != nil {
+		log.Printf("tray: writing the state icons: %v", ierr)
+	}
+	t.stateIcons = icons // whatever got written before the error still counts
 	t.batch = &noticeBatcher{
 		window: noticeBatchWindow,
 		cap:    noticeBatchCap,
@@ -979,8 +1140,9 @@ func (t *tray) sync(first bool) {
 
 	t.mu.Lock()
 	rows := trayRowsFor(conns, t.click, t.binding, t.notif)
+	oldRows := t.rows
 	iconChanged := first || t.icon != icon
-	menuChanged := first || !trayRowsEqual(t.rows, rows)
+	menuChanged := first || !trayRowsEqual(oldRows, rows)
 	t.icon, t.conns, t.rows = icon, conns, rows
 	if menuChanged {
 		t.revision++
@@ -1010,11 +1172,19 @@ func (t *tray) sync(first bool) {
 	}
 	t.emit(trayItemPath, trayItemIface+".NewToolTip")
 	if menuChanged {
-		t.emit(trayMenuPath, trayMenuIface+".LayoutUpdated", rev, trayIDRoot)
+		// first makes oldRows nil, so this is always a LayoutUpdated then.
+		t.emitMenuChange(oldRows, rows, rev)
 	}
 }
 
 func (t *tray) emit(path dbus.ObjectPath, name string, args ...any) {
+	if t.emitFn != nil {
+		t.emitFn(path, name, args...)
+		return
+	}
+	if t.conn == nil {
+		return
+	}
 	if err := t.conn.Emit(path, name, args...); err != nil {
 		log.Printf("tray: emit %s: %v", name, err)
 	}
@@ -1376,22 +1546,33 @@ func (t *tray) notifyNotBound(err error) {
 // "key not bound" warning. Those never replace anything, because they are
 // answers to something the user just clicked. It is not rate-limited; only
 // notifyNotBound is, because that one can fire on every stray click.
-func (t *tray) notify(title, body string) { t.sendNotify(0, title, body) }
+func (t *tray) notify(title, body string) { t.sendNotify(0, title, body, t.iconFor(IconNone)) }
+
+// iconFor resolves a notice's icon to a file path: the rendered state PNG when
+// the notice names one and it was written, otherwise our own app icon. "" means
+// neither exists, and sendNotify falls back to a theme name.
+func (t *tray) iconFor(ic Icon) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if p := t.stateIcons[ic]; p != "" {
+		return p
+	}
+	return t.iconPath
+}
 
 // sendNotify performs the Notify call and returns the id the server assigned.
 // replaces is the id of the notification to take the place of, or 0 for a new
 // one. Replacing is part of the freedesktop spec, so every server honours it.
-func (t *tray) sendNotify(replaces uint32, title, body string) uint32 {
+// icon is the path the server should draw: a per-state PNG for a mute notice,
+// our app SVG for everything else.
+func (t *tray) sendNotify(replaces uint32, title, body, icon string) uint32 {
 	if t.notifyFn != nil {
-		return t.notifyFn(replaces, title, body)
+		return t.notifyFn(replaces, title, body, icon)
 	}
 	if t.conn == nil {
 		log.Printf("tray: notify (no bus): %s: %s", title, body)
 		return 0
 	}
-	t.mu.RLock()
-	icon := t.iconPath
-	t.mu.RUnlock()
 	hints := map[string]dbus.Variant{"urgency": dbus.MakeVariant(byte(1))}
 	if icon == "" {
 		// The icon file could not be written; a theme name still shows
@@ -1420,7 +1601,8 @@ func (t *tray) sendNotify(replaces uint32, title, body string) uint32 {
 // notifyEvent sends one event notification, or the batch that stands for
 // several. With "Replace previous notification" on it takes the place of the
 // last one, so only the newest ts6tray notification is ever on screen.
-func (t *tray) notifyEvent(title, body string) {
+// ic is the notice's state icon, or the batch's newest notice's.
+func (t *tray) notifyEvent(title, body string, ic Icon) {
 	var replaces uint32
 	t.mu.RLock()
 	if t.notifyOptOnLocked(trayOptReplace) {
@@ -1428,7 +1610,7 @@ func (t *tray) notifyEvent(title, body string) {
 	}
 	t.mu.RUnlock()
 
-	id := t.sendNotify(replaces, title, body)
+	id := t.sendNotify(replaces, title, body, t.iconFor(ic))
 
 	t.mu.Lock()
 	t.lastEventID = id
