@@ -35,9 +35,13 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 	for _, want := range []string{
 		"ts6tray settings",
 		settingsHint,
+		"Key binding (one-time)\n",
+		"  ▸ Bind microphone key\n",
+		"  ▸ Bind speaker key\n",
 		"Left-click on the tray icon   ‹ microphone ›",
 		"\nNotifications\n",
 		"\nDelivery\n",
+		"  Show notifications for   ‹ 5 s ›",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render is missing %q:\n%s", want, out)
@@ -61,17 +65,17 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 // video, and it moves with the cursor.
 func TestSettingsRenderHighlightsTheCursor(t *testing.T) {
 	s := testState(t)
-	s.cursor = 1 // the first notification switch
+	s.cursor = settingsRowClick + 1 // the first notification switch
 	out := settingsRender(s)
 	if n := strings.Count(out, settingsReverse); n != 1 {
 		t.Fatalf("%d highlighted rows, want 1", n)
 	}
 	want := settingsReverse + "  [x] " + trayNotifyGroups[0].label + settingsReset
 	if !strings.Contains(out, want) {
-		t.Errorf("the highlight is not on row 1:\n%s", out)
+		t.Errorf("the highlight is not on the first switch row:\n%s", out)
 	}
 	if strings.Contains(settingsRender(settingsState{notif: s.notif}), want) {
-		t.Error("row 1 is highlighted with the cursor on row 0")
+		t.Error("that row is highlighted with the cursor on row 0")
 	}
 }
 
@@ -123,8 +127,8 @@ func TestSettingsPressMoves(t *testing.T) {
 // for a write, and nothing else moves.
 func TestSettingsPressToggles(t *testing.T) {
 	s := testState(t)
-	s.cursor = 1 // "Someone joins or leaves my channel", on by default
-	key := settingsRowKeys()[1]
+	s.cursor = settingsRowClick + 1 // "Someone joins or leaves my channel", on by default
+	key := settingsRowKeys()[s.cursor]
 
 	next, act := settingsPress(s, "toggle")
 	if act != settingsActWrite {
@@ -152,6 +156,7 @@ func TestSettingsPressToggles(t *testing.T) {
 func TestSettingsPressFlipsTheClickTarget(t *testing.T) {
 	for _, key := range []string{"toggle", "left", "right"} {
 		s := testState(t)
+		s.cursor = settingsRowClick
 		next, act := settingsPress(s, key)
 		if act != settingsActWrite || next.click != "speaker" {
 			t.Errorf("%s: click = %q, act = %v", key, next.click, act)
@@ -163,9 +168,14 @@ func TestSettingsPressFlipsTheClickTarget(t *testing.T) {
 	}
 	// Left and right do nothing on a checkbox row.
 	s := testState(t)
-	s.cursor = 1
-	if next, act := settingsPress(s, "right"); act != settingsActNone || next.cursor != 1 {
+	s.cursor = settingsRowClick + 1
+	if next, act := settingsPress(s, "right"); act != settingsActNone || next.notif == nil {
 		t.Errorf("right on a switch row did something: act %v", act)
+	}
+	// …nor on a bind row, where there is nothing to cycle through.
+	s.cursor = 0
+	if next, act := settingsPress(s, "left"); act != settingsActNone || next.bind != "" {
+		t.Errorf("left on a bind row started something: act %v bind %q", act, next.bind)
 	}
 }
 
@@ -181,9 +191,9 @@ func TestSettingsPressQuits(t *testing.T) {
 func TestSettingsSaveWritesAndReloads(t *testing.T) {
 	s := testState(t)
 	path := trayConfigPath()
-	s.cursor = 1
+	s.cursor = settingsRowClick + 1
 	s, _ = settingsPress(s, "toggle")
-	s, _ = settingsPress(s, "left") // and the click target, from row 0's neighbour
+	s, _ = settingsPress(s, "left") // a no-op on a switch row
 
 	reloads := 0
 	s = settingsSave(path, s, func() error { reloads++; return nil })
@@ -214,6 +224,7 @@ func TestSettingsSaveKeepsForeignKeys(t *testing.T) {
 	if err := trayWriteConfig(path, kv); err != nil {
 		t.Fatal(err)
 	}
+	s.cursor = settingsRowClick
 	s, _ = settingsPress(s, "toggle") // flip the click target
 	s = settingsSave(path, s, nil)
 	if got := trayReadConfig(path)["something.else"]; got != "42" {
@@ -266,5 +277,225 @@ func TestSettingsReadKey(t *testing.T) {
 	}
 	if _, err := settingsReadKey(bufioReader("")); err == nil {
 		t.Error("a closed stdin did not report an error")
+	}
+}
+
+// --- the key-binding helper -------------------------------------------------
+
+// TestSettingsBindStartsACountdown: activating a bind row puts the target and
+// the full ten seconds into the state, and writes nothing.
+func TestSettingsBindStartsACountdown(t *testing.T) {
+	for i, want := range []string{"mic", "speaker"} {
+		s := testState(t)
+		s.cursor = i
+		s.status = "something old"
+
+		next, act := settingsPress(s, "toggle")
+		if act != settingsActNone {
+			t.Errorf("row %d: act = %v, want none (the press comes at zero)", i, act)
+		}
+		if next.bind != want {
+			t.Errorf("row %d: bind = %q, want %q", i, next.bind, want)
+		}
+		if next.left != settingsBindSeconds {
+			t.Errorf("row %d: left = %d, want %d", i, next.left, settingsBindSeconds)
+		}
+		if next.status != "" {
+			t.Errorf("row %d: the stale status %q survived", i, next.status)
+		}
+		if s.bind != "" {
+			t.Error("the press mutated the state it was given")
+		}
+	}
+}
+
+// TestSettingsBindTicksDownAndPresses: a tick a second, then the press action
+// for whichever target was counting down.
+func TestSettingsBindTicksDownAndPresses(t *testing.T) {
+	for _, c := range []struct {
+		row  int
+		want settingsAct
+	}{
+		{0, settingsActPressMic},
+		{1, settingsActPressSpeaker},
+	} {
+		s := testState(t)
+		s.cursor = c.row
+		s, _ = settingsPress(s, "toggle")
+
+		for i := 1; i < settingsBindSeconds; i++ {
+			var act settingsAct
+			s, act = settingsPress(s, "tick")
+			if act != settingsActNone {
+				t.Fatalf("row %d: tick %d already acted (%v)", c.row, i, act)
+			}
+			if want := settingsBindSeconds - i; s.left != want {
+				t.Fatalf("row %d: after %d ticks left = %d, want %d", c.row, i, s.left, want)
+			}
+			if s.bind == "" {
+				t.Fatalf("row %d: the countdown stopped at tick %d", c.row, i)
+			}
+		}
+
+		var act settingsAct
+		s, act = settingsPress(s, "tick")
+		if act != c.want {
+			t.Errorf("row %d: final act = %v, want %v", c.row, act, c.want)
+		}
+		if s.bind != "" || s.left != 0 {
+			t.Errorf("row %d: the countdown did not clear: bind %q left %d", c.row, s.bind, s.left)
+		}
+		// Further ticks are harmless no-ops.
+		if _, act := settingsPress(s, "tick"); act != settingsActNone {
+			t.Errorf("row %d: a tick with nothing running acted (%v)", c.row, act)
+		}
+	}
+}
+
+// TestSettingsBindCancels: Esc and q both stop the countdown without quitting;
+// a second q then quits as usual.
+func TestSettingsBindCancels(t *testing.T) {
+	s := testState(t)
+	s, _ = settingsPress(s, "toggle")
+	s, _ = settingsPress(s, "tick")
+
+	next, act := settingsPress(s, "quit")
+	if act != settingsActQuit && next.bind != "" {
+		t.Fatalf("quit during a countdown: bind %q act %v", next.bind, act)
+	}
+	if act != settingsActNone {
+		t.Errorf("the first quit returned %v, want none — it only cancels", act)
+	}
+	if next.bind != "" || next.left != 0 {
+		t.Errorf("the countdown survived: bind %q left %d", next.bind, next.left)
+	}
+	if next.status != settingsCancelled {
+		t.Errorf("status = %q, want %q", next.status, settingsCancelled)
+	}
+	if _, act := settingsPress(next, "quit"); act != settingsActQuit {
+		t.Errorf("the second quit returned %v, want quit", act)
+	}
+	// A cancelled countdown never presses anything.
+	if _, act := settingsPress(next, "tick"); act != settingsActNone {
+		t.Errorf("a tick after cancelling acted (%v)", act)
+	}
+}
+
+// TestSettingsBindRestartsOnASecondActivation: aiming at the other key while
+// one is counting down retargets it and starts the ten seconds over.
+func TestSettingsBindRestartsOnASecondActivation(t *testing.T) {
+	s := testState(t)
+	s, _ = settingsPress(s, "toggle")
+	for i := 0; i < 4; i++ {
+		s, _ = settingsPress(s, "tick")
+	}
+	if s.left != settingsBindSeconds-4 {
+		t.Fatalf("left = %d, want %d", s.left, settingsBindSeconds-4)
+	}
+
+	// Same row: restart.
+	s, _ = settingsPress(s, "toggle")
+	if s.bind != "mic" || s.left != settingsBindSeconds {
+		t.Errorf("re-activating mic: bind %q left %d, want mic and %d", s.bind, s.left, settingsBindSeconds)
+	}
+
+	// Other row: retarget and restart.
+	s, _ = settingsPress(s, "tick")
+	s.cursor = 1
+	s, _ = settingsPress(s, "toggle")
+	if s.bind != "speaker" || s.left != settingsBindSeconds {
+		t.Errorf("switching to speaker: bind %q left %d", s.bind, s.left)
+	}
+}
+
+// TestSettingsRenderShowsTheCountdown: the status line turns into the
+// instructions, counting down, and the hint says how to stop.
+func TestSettingsRenderShowsTheCountdown(t *testing.T) {
+	s := testState(t)
+	s.status = "daemon: reloaded ✓"
+	s, _ = settingsPress(s, "toggle")
+	for i := 0; i < 3; i++ {
+		s, _ = settingsPress(s, "tick")
+	}
+
+	out := plain(settingsRender(s))
+	want := "Switch to TeamSpeak → Settings → Key Bindings → Microphone: Toggle → Choose … pressing in 7 s"
+	if !strings.Contains(out, want) {
+		t.Errorf("render is missing %q:\n%s", want, out)
+	}
+	if !strings.Contains(out, settingsBindHint) {
+		t.Errorf("render does not say how to cancel:\n%s", out)
+	}
+	if strings.Contains(out, "reloaded") {
+		t.Errorf("the old status is still on screen under the countdown:\n%s", out)
+	}
+
+	s.bind, s.left = "speaker", 1
+	if !strings.Contains(plain(settingsRender(s)), "Speaker: Toggle → Choose … pressing in 1 s") {
+		t.Errorf("the speaker countdown reads wrong:\n%s", plain(settingsRender(s)))
+	}
+}
+
+// TestSettingsPressKeyStatus: what the user is told after the press, success
+// or failure, with no daemon spelled out rather than shown as a raw error.
+func TestSettingsPressKeyStatus(t *testing.T) {
+	s := testState(t)
+
+	var got string
+	ok := settingsPressKey(s, "mic", func(target string) error { got = target; return nil })
+	if got != "mic" {
+		t.Errorf("pressed %q, want mic", got)
+	}
+	if ok.status != settingsPressedOK {
+		t.Errorf("status = %q, want %q", ok.status, settingsPressedOK)
+	}
+
+	bad := settingsPressKey(s, "speaker", func(string) error { return errors.New(ipcNotRunning) })
+	if bad.status != ipcNotRunning {
+		t.Errorf("status = %q, want the daemon-not-running message", bad.status)
+	}
+	if none := settingsPressKey(s, "mic", nil); none.status != settingsNoDaemon {
+		t.Errorf("status with no press func = %q", none.status)
+	}
+}
+
+// --- the notification display time ------------------------------------------
+
+// TestSettingsTimeoutRowCycles: the last Delivery row cycles through the
+// values with space and the arrows, and saves like everything else.
+func TestSettingsTimeoutRowCycles(t *testing.T) {
+	s := testState(t)
+	s.cursor = len(settingsRowKeys()) - 1
+	if key := settingsRowKeys()[s.cursor]; key != trayOptTimeout {
+		t.Fatalf("the last row is %q, want the display time", key)
+	}
+	if s.timeout != trayNotifyTimeoutDef {
+		t.Fatalf("loaded timeout = %q, want %q", s.timeout, trayNotifyTimeoutDef)
+	}
+
+	for _, key := range []string{"toggle", "left", "right"} {
+		next, act := settingsPress(s, key)
+		if act != settingsActWrite {
+			t.Errorf("%s: act = %v, want a write", key, act)
+		}
+		if next.timeout != trayNextTimeout(s.timeout) {
+			t.Errorf("%s: timeout = %q, want %q", key, next.timeout, trayNextTimeout(s.timeout))
+		}
+	}
+
+	// Walk the whole cycle and watch the label follow.
+	path := trayConfigPath()
+	for _, want := range append(append([]string{}, trayNotifyTimeouts[3:]...), trayNotifyTimeouts[:3]...) {
+		s, _ = settingsPress(s, "toggle")
+		if s.timeout != want {
+			t.Fatalf("cycled to %q, want %q", s.timeout, want)
+		}
+		s = settingsSave(path, s, nil)
+		if got := trayReadTimeout(path); got != want {
+			t.Errorf("on disk: %q, want %q", got, want)
+		}
+		if label := "‹ " + trayNotifyTimeoutLabel(want) + " ›"; !strings.Contains(plain(settingsRender(s)), label) {
+			t.Errorf("the row does not show %q", label)
+		}
 	}
 }

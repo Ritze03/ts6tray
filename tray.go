@@ -48,10 +48,6 @@ const (
 	// trayNotifyEvery is the floor between two "key not bound" notifications.
 	// It applies to that warning only; the bind helper always notifies.
 	trayNotifyEvery = 30 * time.Second
-
-	// trayBindDelay is how long the bind helper waits before pressing the
-	// button, so the user can switch to TeamSpeak and start the assignment.
-	trayBindDelay = 10 * time.Second
 )
 
 // --- the app icon file -----------------------------------------------------
@@ -477,66 +473,8 @@ const (
 	trayIDSep2    int32 = 13
 	trayIDQuit    int32 = 14
 
-	// The Settings submenu and its children.
-	trayIDSettings     int32 = 20
-	trayIDBindMic      int32 = 21
-	trayIDBindSpeaker  int32 = 22
-	trayIDSep3         int32 = 23
-	trayIDClickMic     int32 = 24
-	trayIDClickSpeaker int32 = 25
-
-	// The Notifications submenu inside Settings, and the separator above it.
-	// Its checkmark children started at trayIDNotify0, one per trayNotifyGroups
-	// entry; below those a separator and the option checkmarks, which are
-	// switches of the same kind but about how notifications are delivered
-	// rather than which events produce them.
-	//
-	// The ids are pinned per switch in trayNotifyID rather than derived from
-	// the position, because 30–40 shipped: the switches added afterwards get
-	// fresh ids at the end instead of shifting the options out from under a
-	// host that has already drawn the menu.
-	trayIDNotify     int32 = 26
-	trayIDSep4       int32 = 27
-	trayIDNotify0    int32 = 30
-	trayIDSep5       int32 = 38
-	trayIDNotifyOpt0 int32 = 39
-
-	trayIDNotifySelf      int32 = 41
-	trayIDNotifyServerMsg int32 = 42
-	trayIDNotifyQuiet     int32 = 43
-
 	trayIDServer0 int32 = 100
 )
-
-// trayNotifyID is the dbusmenu item id of every switch's checkmark, by config
-// key. 30–37 are the eight kinds the first release shipped, 39/40 its two
-// delivery options; everything after that is numbered from 41 up.
-var trayNotifyID = map[string]int32{
-	"joinleave":  trayIDNotify0,
-	"moved":      trayIDNotify0 + 1,
-	"kicked":     trayIDNotify0 + 2,
-	"mute":       trayIDNotify0 + 3,
-	"privateMsg": trayIDNotify0 + 4,
-	"poke":       trayIDNotify0 + 5,
-	"channelMsg": trayIDNotify0 + 6,
-	"connLost":   trayIDNotify0 + 7,
-
-	trayOptBatch:   trayIDNotifyOpt0,
-	trayOptReplace: trayIDNotifyOpt0 + 1,
-
-	"self":               trayIDNotifySelf,
-	"serverMsg":          trayIDNotifyServerMsg,
-	trayOptQuietWhenDeaf: trayIDNotifyQuiet,
-}
-
-// trayNotifyKeyByID is trayNotifyID reversed, for the click handler.
-var trayNotifyKeyByID = func() map[int32]string {
-	m := make(map[int32]string, len(trayNotifyID))
-	for k, id := range trayNotifyID {
-		m[id] = k
-	}
-	return m
-}()
 
 // trayMenuNode is the dbusmenu layout struct: (ia{sv}av).
 type trayMenuNode struct {
@@ -551,14 +489,6 @@ type trayMenuProps struct {
 	Props map[string]dbus.Variant
 }
 
-// trayMenuRemovedProps is one entry of ItemsPropertiesUpdated's second
-// argument, a(ias): the properties that went back to their default. We never
-// remove one, but the signal's signature demands the array.
-type trayMenuRemovedProps struct {
-	ID    int32
-	Props []string
-}
-
 // trayMenuEvent is one entry of EventGroup's a(isvu).
 type trayMenuEvent struct {
 	ID        int32
@@ -567,22 +497,14 @@ type trayMenuEvent struct {
 	Timestamp uint32
 }
 
-// trayRow is one menu row before it becomes dbusmenu properties.
-//
-// The rows stay a flat, comparable slice — trayRowsEqual compares them with ==,
-// which a []trayRow field would break — so nesting is expressed by parent: a
-// row with parent == trayIDRoot hangs off the menu bar, any other parent names
-// the submenu row it belongs to.
+// trayRow is one menu row before it becomes dbusmenu properties. The menu is
+// flat — every row hangs off the menu bar — so the rows stay a comparable
+// slice and trayRowsEqual can compare them with ==.
 type trayRow struct {
 	id        int32
-	parent    int32 // trayIDRoot, or the id of the submenu row holding this one
 	label     string
 	separator bool
 	enabled   bool
-	submenu   bool // has children: "children-display" = "submenu"
-	radio     bool // "toggle-type" = "radio"
-	check     bool // "toggle-type" = "checkmark"
-	checked   bool // the radio's or checkmark's "toggle-state"
 }
 
 func (r trayRow) props() map[string]dbus.Variant {
@@ -597,21 +519,6 @@ func (r trayRow) props() map[string]dbus.Variant {
 	p["label"] = dbus.MakeVariant(strings.ReplaceAll(r.label, "_", "__"))
 	p["enabled"] = dbus.MakeVariant(r.enabled)
 	p["visible"] = dbus.MakeVariant(true)
-	if r.submenu {
-		p["children-display"] = dbus.MakeVariant("submenu")
-	}
-	if r.radio || r.check {
-		kind := "checkmark"
-		if r.radio {
-			kind = "radio"
-		}
-		p["toggle-type"] = dbus.MakeVariant(kind)
-		state := int32(0)
-		if r.checked {
-			state = 1
-		}
-		p["toggle-state"] = dbus.MakeVariant(state)
-	}
 	return p
 }
 
@@ -628,17 +535,19 @@ type tray struct {
 	quit func()
 	name string // org.kde.StatusNotifierItem-<pid>-1
 
-	// mute and press default to the TSClient's methods; tests replace them so
-	// nothing talks to a real TeamSpeak.
-	mute      func(target, mode string) (bool, error)
-	press     func(button string) error
-	snapshot  func() ([]Conn, Icon, bool)
-	bindDelay time.Duration // 0 means trayBindDelay
+	// mute and snapshot default to the TSClient's methods; tests replace them
+	// so nothing talks to a real TeamSpeak.
+	mute     func(target, mode string) (bool, error)
+	snapshot func() ([]Conn, Icon, bool)
 
 	// notifyFn, when set, takes the place of the D-Bus Notify call. Tests use
 	// it to capture what would have been sent, replaces_id and icon path
-	// included.
-	notifyFn func(replaces uint32, title, body, icon string) uint32
+	// included, and to make a send fail.
+	notifyFn func(replaces uint32, title, body, icon string) (uint32, error)
+
+	// now is the clock, so a test can age lastEventAt past the replace window
+	// without sleeping. nil means time.Now.
+	now func() time.Time
 
 	// emitFn, when set, takes the place of conn.Emit. Tests use it to capture
 	// which menu signal a change produced, without a bus.
@@ -664,9 +573,10 @@ type tray struct {
 	iconPath        string                // cached app icon, "" when it could not be written
 	notifyIcons     map[notifyIcon]string // unpacked notification SVGs, by icon
 	lastEventID     uint32                // id of the last event notification, for replaces_id
+	lastEventAt     time.Time             // when it was sent, for the replace window
 	click           string                // left-click target: "mic" or "speaker"
-	notif           map[string]bool       // Settings -> Notifications switches, by group key
-	binding         string                // "" or the target whose bind countdown is running
+	notif           map[string]bool       // notification switches, by config key
+	timeout         string                // notify.timeout: how long a notification stays up
 
 	props *prop.Properties
 }
@@ -678,11 +588,11 @@ func (t *tray) muteFunc() func(string, string) (bool, error) {
 	return t.ts.SetMute
 }
 
-func (t *tray) pressFunc() func(string) error {
-	if t.press != nil {
-		return t.press
+func (t *tray) nowFn() time.Time {
+	if t.now != nil {
+		return t.now()
 	}
-	return t.ts.Press
+	return time.Now()
 }
 
 func (t *tray) snapshotFunc() func() ([]Conn, Icon, bool) {
@@ -712,56 +622,6 @@ func (t *tray) clickTarget() string {
 		return "speaker"
 	}
 	return "mic"
-}
-
-// setClick selects a left-click target, persists it and republishes the menu so
-// the radio marks move.
-func (t *tray) setClick(target string) {
-	if target != "speaker" {
-		target = "mic"
-	}
-	t.mu.Lock()
-	changed := t.click != target
-	t.click = target
-	t.mu.Unlock()
-	if !changed {
-		return
-	}
-	t.cfgMu.Lock()
-	err := trayWriteClick(trayConfigPath(), target)
-	t.cfgMu.Unlock()
-	if err != nil {
-		log.Printf("tray: saving the click setting: %v", err)
-	}
-	t.refresh()
-}
-
-// toggleNotify flips one Settings -> Notifications switch, persists the whole
-// set and republishes the menu so the checkmark moves.
-func (t *tray) toggleNotify(key string) {
-	// Held across the flip and the write, so two clicks in two goroutines
-	// cannot each rewrite the file from a stale copy.
-	t.cfgMu.Lock()
-	t.mu.Lock()
-	if t.notif == nil {
-		t.notif = trayNotifyDefaults()
-	}
-	t.notif[key] = !t.notif[key]
-	snap := make(map[string]bool, len(t.notif))
-	for k, v := range t.notif {
-		snap[k] = v
-	}
-	t.mu.Unlock()
-	err := trayWriteNotify(trayConfigPath(), snap)
-	t.cfgMu.Unlock()
-	if err != nil {
-		log.Printf("tray: saving the notification settings: %v", err)
-	}
-	// Switching batching off mid-burst must not strand whatever is queued.
-	if key == trayOptBatch && !snap[trayOptBatch] && t.batch != nil {
-		t.batch.flush()
-	}
-	t.refresh()
 }
 
 // notifyEnabled reports whether the user wants to see this kind of notice.
@@ -829,18 +689,21 @@ func noticeIgnoresQuiet(k noticeKind) bool {
 func (t *tray) reloadConfig() error {
 	path := trayConfigPath()
 	t.cfgMu.Lock()
-	click, notif := trayReadClick(path), trayReadNotify(path)
+	click, notif, timeout := trayReadClick(path), trayReadNotify(path), trayReadTimeout(path)
 	t.cfgMu.Unlock()
 
 	t.mu.Lock()
-	t.click, t.notif = click, notif
+	t.click, t.notif, t.timeout = click, notif, timeout
 	t.mu.Unlock()
 
-	// Same reason as in toggleNotify: switching batching off must not strand
-	// whatever is already queued.
+	// Switching batching off must not strand whatever is already queued.
 	if !notif[trayOptBatch] && t.batch != nil {
 		t.batch.flush()
 	}
+	// Rebuild and republish the menu. No setting appears in it any more, so
+	// this changes nothing today and emits nothing — refresh only signals when
+	// the rows really moved — but it keeps the menu the config's dependent
+	// rather than something that has to be remembered separately.
 	t.refresh()
 	return nil
 }
@@ -896,9 +759,8 @@ func (t *tray) onNotice(n notice) {
 // this is for the settings the user changes from inside the menu.
 func (t *tray) refresh() {
 	t.mu.Lock()
-	rows := trayRowsFor(t.conns, t.click, t.binding, t.notif)
-	old := t.rows
-	changed := !trayRowsEqual(old, rows)
+	rows := trayRowsFor(t.conns)
+	changed := !trayRowsEqual(t.rows, rows)
 	if changed {
 		t.rows = rows
 		t.revision++
@@ -906,64 +768,16 @@ func (t *tray) refresh() {
 	rev, exported := t.revision, t.exported
 	t.mu.Unlock()
 	if changed && exported {
-		t.emitMenuChange(old, rows, rev)
+		t.emitMenuChange(rev)
 	}
 }
 
-// emitMenuChange tells the host what moved, in the smallest terms that say it.
-//
-// A checkmark or a radio flipping changes nothing about the menu's shape, so it
-// goes out as ItemsPropertiesUpdated carrying only the new toggle-state of the
-// rows that flipped. LayoutUpdated is what a host answers by fetching the whole
-// layout again, which for a click on a checkbox is a rebuild of every row to
-// move one tick — and some hosts close the open menu over it.
-//
-// Anything structural — a server row appearing, a bind countdown relabelling
-// and disabling its row, a row added or removed — still needs LayoutUpdated,
-// because the host cannot learn about it from properties alone. The revision is
-// bumped either way, so a host that re-reads the layout for its own reasons
-// never sees a stale number.
-func (t *tray) emitMenuChange(old, rows []trayRow, rev uint32) {
-	if upd, ok := trayToggleOnlyDiff(old, rows); ok {
-		t.emit(trayMenuPath, trayMenuIface+".ItemsPropertiesUpdated",
-			upd, []trayMenuRemovedProps{})
-		return
-	}
+// emitMenuChange tells the host the menu moved. Everything this menu can change
+// is structural — a server row appearing or its label changing, a toggle
+// enabling — and a host learns about that only by fetching the layout again, so
+// LayoutUpdated with the bumped revision is the whole story.
+func (t *tray) emitMenuChange(rev uint32) {
 	t.emit(trayMenuPath, trayMenuIface+".LayoutUpdated", rev, trayIDRoot)
-}
-
-// trayToggleOnlyDiff reports whether old and rows differ in nothing but the
-// toggle-state of some rows, and if so returns just those rows' new state as
-// ItemsPropertiesUpdated's a(ia{sv}).
-//
-// ok is false for an identical pair too: there is then nothing to send, and the
-// caller only reaches this after establishing that something did change.
-func trayToggleOnlyDiff(old, rows []trayRow) ([]trayMenuProps, bool) {
-	if len(old) != len(rows) {
-		return nil, false
-	}
-	var upd []trayMenuProps
-	for i := range rows {
-		if old[i] == rows[i] {
-			continue
-		}
-		// Everything except checked has to match: compare the old row with its
-		// checked flag set to the new one's, which leaves exactly that field out.
-		was := old[i]
-		was.checked = rows[i].checked
-		if was != rows[i] {
-			return nil, false
-		}
-		state := int32(0)
-		if rows[i].checked {
-			state = 1
-		}
-		upd = append(upd, trayMenuProps{
-			ID:    rows[i].id,
-			Props: map[string]dbus.Variant{"toggle-state": dbus.MakeVariant(state)},
-		})
-	}
-	return upd, len(upd) > 0
 }
 
 // RunTray runs the StatusNotifierItem until ctx is done. It never returns an
@@ -985,14 +799,15 @@ func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) erro
 	defer conn.Close()
 
 	t := &tray{
-		ctx:   ctx,
-		conn:  conn,
-		ts:    c,
-		quit:  quit,
-		name:  fmt.Sprintf("org.kde.StatusNotifierItem-%d-1", os.Getpid()),
-		icon:  IconNone,
-		click: trayReadClick(trayConfigPath()),
-		notif: trayReadNotify(trayConfigPath()),
+		ctx:     ctx,
+		conn:    conn,
+		ts:      c,
+		quit:    quit,
+		name:    fmt.Sprintf("org.kde.StatusNotifierItem-%d-1", os.Getpid()),
+		icon:    IconNone,
+		click:   trayReadClick(trayConfigPath()),
+		notif:   trayReadNotify(trayConfigPath()),
+		timeout: trayReadTimeout(trayConfigPath()),
 	}
 	if path, ierr := trayIconFile(); ierr != nil {
 		log.Printf("tray: writing the app icon: %v", ierr)
@@ -1020,10 +835,11 @@ func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) erro
 		rl.set(t.reloadConfig)
 	}
 
-	// Watch for the tray host coming and going, so a shell restart re-registers.
-	owners := make(chan *dbus.Signal, 8)
-	conn.Signal(owners)
-	defer conn.RemoveSignal(owners)
+	// Watch for the tray host coming and going, so a shell restart re-registers,
+	// and for our own notifications being closed, so we stop replacing them.
+	sigs := make(chan *dbus.Signal, 8)
+	conn.Signal(sigs)
+	defer conn.RemoveSignal(sigs)
 	if err := conn.AddMatchSignal(
 		dbus.WithMatchSender("org.freedesktop.DBus"),
 		dbus.WithMatchObjectPath("/org/freedesktop/DBus"),
@@ -1032,6 +848,12 @@ func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) erro
 		dbus.WithMatchArg(0, trayWatcherName),
 	); err != nil {
 		log.Printf("tray: cannot watch %s: %v", trayWatcherName, err)
+	}
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchInterface("org.freedesktop.Notifications"),
+		dbus.WithMatchMember("NotificationClosed"),
+	); err != nil {
+		log.Printf("tray: cannot watch NotificationClosed: %v", err)
 	}
 
 	updates := c.Updates()
@@ -1049,8 +871,17 @@ func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) erro
 			t.sync(false)
 		case n := <-notices:
 			t.onNotice(n)
-		case sig := <-owners:
-			if sig == nil || sig.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(sig.Body) < 3 {
+		case sig := <-sigs:
+			if sig == nil {
+				continue
+			}
+			if sig.Name == "org.freedesktop.Notifications.NotificationClosed" && len(sig.Body) > 0 {
+				if id, ok := sig.Body[0].(uint32); ok {
+					t.onNotificationClosed(id)
+				}
+				continue
+			}
+			if sig.Name != "org.freedesktop.DBus.NameOwnerChanged" || len(sig.Body) < 3 {
 				continue
 			}
 			newOwner, _ := sig.Body[2].(string)
@@ -1080,7 +911,7 @@ func (t *tray) sync(first bool) {
 	tip := trayTooltipFor(conns)
 
 	t.mu.Lock()
-	rows := trayRowsFor(conns, t.click, t.binding, t.notif)
+	rows := trayRowsFor(conns)
 	oldRows := t.rows
 	iconChanged := first || t.icon != icon
 	menuChanged := first || !trayRowsEqual(oldRows, rows)
@@ -1113,8 +944,7 @@ func (t *tray) sync(first bool) {
 	}
 	t.emit(trayItemPath, trayItemIface+".NewToolTip")
 	if menuChanged {
-		// first makes oldRows nil, so this is always a LayoutUpdated then.
-		t.emitMenuChange(oldRows, rows, rev)
+		t.emitMenuChange(rev)
 	}
 }
 
@@ -1352,20 +1182,9 @@ func trayTooltipFor(conns []Conn) trayTooltip {
 	}
 }
 
-// trayBindLabel is the label of a bind-helper row. While that target's
-// countdown runs the row says so and is disabled, which is the whole feedback
-// the user gets between the two notifications.
-func trayBindLabel(what, binding, target string) (string, bool) {
-	if binding == target {
-		return "Pressing " + what + " key in 10 s…", false
-	}
-	return "Bind " + what + " key…", true
-}
-
-// trayRowsFor builds the whole menu: the root rows first, then the children of
-// the Settings submenu. click is the left-click target and binding is the
-// target of a running bind countdown ("" for none).
-func trayRowsFor(conns []Conn, click, binding string, notif map[string]bool) []trayRow {
+// trayRowsFor builds the whole menu: the per-server rows, the two toggles and
+// Quit. Everything else the user can change lives in `ts6tray settings`.
+func trayRowsFor(conns []Conn) []trayRow {
 	active := trayActiveID(conns)
 	var rows []trayRow
 	if len(conns) == 0 {
@@ -1380,50 +1199,13 @@ func trayRowsFor(conns []Conn, click, binding string, notif map[string]bool) []t
 		}
 		rows = append(rows, trayRow{id: trayIDServer0 + int32(i), label: label})
 	}
-	micLabel, micOn := trayBindLabel("microphone", binding, "mic")
-	spkLabel, spkOn := trayBindLabel("speaker", binding, "speaker")
-	rows = append(rows,
+	return append(rows,
 		trayRow{id: trayIDSep1, separator: true},
 		trayRow{id: trayIDMic, label: "Toggle microphone mute", enabled: len(conns) > 0},
 		trayRow{id: trayIDSpeaker, label: "Toggle speaker mute", enabled: len(conns) > 0},
 		trayRow{id: trayIDSep2, separator: true},
-		trayRow{id: trayIDSettings, label: "Settings", enabled: true, submenu: true},
 		trayRow{id: trayIDQuit, label: "Quit", enabled: true},
-
-		// Children of Settings. They live in the same flat slice; parent is
-		// what puts them inside the submenu.
-		trayRow{id: trayIDBindMic, parent: trayIDSettings, label: micLabel, enabled: micOn},
-		trayRow{id: trayIDBindSpeaker, parent: trayIDSettings, label: spkLabel, enabled: spkOn},
-		trayRow{id: trayIDSep3, parent: trayIDSettings, separator: true},
-		trayRow{id: trayIDClickMic, parent: trayIDSettings, label: "Left-click toggles microphone",
-			enabled: true, radio: true, checked: click != "speaker"},
-		trayRow{id: trayIDClickSpeaker, parent: trayIDSettings, label: "Left-click toggles speaker",
-			enabled: true, radio: true, checked: click == "speaker"},
-		trayRow{id: trayIDSep4, parent: trayIDSettings, separator: true},
-		trayRow{id: trayIDNotify, parent: trayIDSettings, label: "Notifications", enabled: true, submenu: true},
 	)
-	// Children of Notifications: one checkmark per switch, in the declared
-	// order, so the id is the index and nothing has to be looked up by label.
-	for _, g := range trayNotifyGroups {
-		rows = append(rows, trayNotifyRow(g, notif))
-	}
-	// …then, below a separator, how the ones that are on get delivered.
-	rows = append(rows, trayRow{id: trayIDSep5, parent: trayIDNotify, separator: true})
-	for _, o := range trayNotifyOptions {
-		rows = append(rows, trayNotifyRow(o, notif))
-	}
-	return rows
-}
-
-// trayNotifyRow is one checkmark in the Notifications submenu, at that switch's
-// pinned id.
-func trayNotifyRow(g trayNotifyGroup, notif map[string]bool) trayRow {
-	on := g.def
-	if v, ok := notif[g.key]; ok {
-		on = v
-	}
-	return trayRow{id: trayNotifyID[g.key], parent: trayIDNotify,
-		label: g.label, enabled: true, check: true, checked: on}
 }
 
 func trayRowsEqual(a, b []trayRow) bool {
@@ -1441,7 +1223,7 @@ func trayRowsEqual(a, b []trayRow) bool {
 // --- org.kde.StatusNotifierItem methods ------------------------------------
 
 // Activate is the left click (ItemIsMenu is false, so hosts send this). What it
-// toggles is the user's choice, from the Settings submenu.
+// toggles is the user's choice, from `ts6tray settings`.
 func (t *tray) Activate(x, y int32) *dbus.Error {
 	go t.toggle(t.clickTarget())
 	return nil
@@ -1490,6 +1272,14 @@ func (t *tray) notifyNotBound(err error) {
 // notifyNotBound is, because that one can fire on every stray click.
 func (t *tray) notify(title, body string) { t.sendNotify(0, title, body, t.iconFor(iconApp)) }
 
+// notifyTimeout is the configured display time, as Notify's expire_timeout in
+// milliseconds.
+func (t *tray) notifyTimeout() int32 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return trayTimeoutMillis(t.timeout)
+}
+
 // iconFor resolves a notice's icon to a file path: the unpacked notification
 // SVG when the notice names one and it was written, otherwise our own app icon.
 // "" means neither exists, and sendNotify falls back to a theme name.
@@ -1502,18 +1292,23 @@ func (t *tray) iconFor(ic notifyIcon) string {
 	return t.iconPath
 }
 
+// trayAppName is the app_name every Notify call carries. The user wants the
+// notifications to read as TeamSpeak's, not as some helper's: ts6tray is the
+// only thing sending them and saying so twice helps nobody.
+const trayAppName = "TeamSpeak"
+
 // sendNotify performs the Notify call and returns the id the server assigned.
 // replaces is the id of the notification to take the place of, or 0 for a new
 // one. Replacing is part of the freedesktop spec, so every server honours it.
 // icon is the path the server should draw: a notification SVG when the notice
 // has one, our app icon for everything else.
-func (t *tray) sendNotify(replaces uint32, title, body, icon string) uint32 {
+func (t *tray) sendNotify(replaces uint32, title, body, icon string) (uint32, error) {
 	if t.notifyFn != nil {
 		return t.notifyFn(replaces, title, body, icon)
 	}
 	if t.conn == nil {
 		log.Printf("tray: notify (no bus): %s: %s", title, body)
-		return 0
+		return 0, nil
 	}
 	hints := map[string]dbus.Variant{"urgency": dbus.MakeVariant(byte(1))}
 	if icon == "" {
@@ -1526,99 +1321,88 @@ func (t *tray) sendNotify(replaces uint32, title, body, icon string) uint32 {
 	}
 	obj := t.conn.Object("org.freedesktop.Notifications", "/org/freedesktop/Notifications")
 	call := obj.Call("org.freedesktop.Notifications.Notify", 0,
-		"ts6tray", replaces, icon,
+		trayAppName, replaces, icon,
 		title, body,
-		[]string{}, hints, int32(15000))
+		[]string{}, hints, t.notifyTimeout())
 	if call.Err != nil {
 		log.Printf("tray: notify: %v (message: %s: %s)", call.Err, title, body)
-		return 0
+		return 0, call.Err
 	}
 	var id uint32
 	if err := call.Store(&id); err != nil {
 		log.Printf("tray: notify: reading the id back: %v", err)
 	}
-	return id
+	return id, nil
+}
+
+// trayDefaultExpiry is how long a notification is assumed to stay on screen
+// when we let the server decide (expire_timeout -1). It is only used to size
+// the replace window below; 5 s is what the common servers use.
+const trayDefaultExpiry = 5 * time.Second
+
+// trayReplaceWindow is how long after sending a notification it is still safe
+// to replace it. 0 means "no limit".
+//
+// Replacing a notification the server has already taken off screen is the bug
+// this exists for: Quickshell/DMS applies such a Notify in place, silently
+// editing an invisible row in its notification centre, and emits no
+// NotificationClosed at expiry to tell us. So once the notification can no
+// longer be on screen we stop claiming to replace it and send a fresh one.
+// "never" is the exception: that notification really does stay up.
+func trayReplaceWindow(timeout string) time.Duration {
+	switch timeout {
+	case "never":
+		return 0
+	case "default":
+		return trayDefaultExpiry
+	}
+	ms := trayTimeoutMillis(timeout)
+	if ms <= 0 {
+		return trayDefaultExpiry
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// onNotificationClosed forgets lastEventID when the server says that
+// notification is gone, so the next event opens a fresh one instead of editing
+// something nobody can see.
+func (t *tray) onNotificationClosed(id uint32) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if id != 0 && id == t.lastEventID {
+		t.lastEventID = 0
+	}
 }
 
 // notifyEvent sends one event notification, or the batch that stands for
 // several. With "Replace previous notification" on it takes the place of the
-// last one, so only the newest ts6tray notification is ever on screen.
-// ic is the notice's state icon, or the batch's newest notice's.
+// last one — while that one can still be on screen — so only the newest
+// ts6tray notification is ever up. ic is the notice's icon, or the batch's
+// newest notice's.
 func (t *tray) notifyEvent(title, body string, ic notifyIcon) {
 	var replaces uint32
 	t.mu.RLock()
-	if t.notifyOptOnLocked(trayOptReplace) {
-		replaces = t.lastEventID
+	if t.lastEventID != 0 && t.notifyOptOnLocked(trayOptReplace) {
+		if w := trayReplaceWindow(t.timeout); w == 0 || t.nowFn().Sub(t.lastEventAt) < w {
+			replaces = t.lastEventID
+		}
 	}
 	t.mu.RUnlock()
 
-	id := t.sendNotify(replaces, title, body, t.iconFor(ic))
+	id, err := t.sendNotify(replaces, title, body, t.iconFor(ic))
+	if err != nil && replaces != 0 {
+		// The id we tried to replace may be the reason it failed. Drop it and
+		// try once more as a new notification, so the news still gets through.
+		id, err = t.sendNotify(0, title, body, t.iconFor(ic))
+	}
+	if err != nil {
+		id = 0
+	}
 
 	t.mu.Lock()
 	t.lastEventID = id
+	t.lastEventAt = t.nowFn()
 	t.mu.Unlock()
-}
-
-// --- the bind helper --------------------------------------------------------
-
-// bindKey is the Settings submenu's "Bind … key…" item: tell the user to switch
-// to TeamSpeak and open the hotkey assignment, wait, then press the button once
-// so TeamSpeak records it as the key for that action.
-//
-// Only one countdown runs at a time; a second click while one is pending is
-// dropped, because two presses would land in whichever assignment dialog is
-// open and bind the wrong action.
-func (t *tray) bindKey(target string) {
-	button, what, said := ButtonMic, "microphone", "toggle microphone mute"
-	if target == "speaker" {
-		button, what, said = ButtonSpeaker, "speaker", "toggle speaker mute"
-	}
-
-	t.mu.Lock()
-	if t.binding != "" {
-		pending := t.binding
-		t.mu.Unlock()
-		log.Printf("tray: bind %s ignored, the %s countdown is still running", target, pending)
-		return
-	}
-	t.binding = target
-	delay := t.bindDelay
-	t.mu.Unlock()
-	if delay <= 0 {
-		delay = trayBindDelay
-	}
-	defer func() {
-		t.mu.Lock()
-		t.binding = ""
-		t.mu.Unlock()
-		t.refresh()
-	}()
-	t.refresh()
-
-	t.notify("ts6tray key binding", fmt.Sprintf(
-		"Switch to TeamSpeak now and start the hotkey assignment for '%s' — ts6tray presses the key in %d seconds.",
-		said, int(delay/time.Second)))
-
-	done := t.ctx
-	if done == nil {
-		done = context.Background()
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-done.Done():
-		log.Printf("tray: bind %s cancelled, shutting down", target)
-		return
-	case <-timer.C:
-	}
-
-	if err := t.pressFunc()(button); err != nil {
-		log.Printf("tray: bind %s: %v", target, err)
-		t.notify("ts6tray key binding failed", err.Error())
-		return
-	}
-	t.notify("ts6tray key binding", strings.ToUpper(what[:1])+what[1:]+
-		" key pressed — TeamSpeak should have recorded it.")
 }
 
 // --- com.canonical.dbusmenu methods ----------------------------------------
@@ -1652,18 +1436,10 @@ func trayFilter(p map[string]dbus.Variant, names []string) map[string]dbus.Varia
 	return out
 }
 
-// trayNodeFor builds one node and, while depth allows, its subtree. depth is
-// the dbusmenu recursionDepth: 0 stops here and a negative value never does.
-func trayNodeFor(rows []trayRow, r trayRow, depth int32, propertyNames []string) trayMenuNode {
-	n := trayMenuNode{ID: r.id, Props: trayFilter(r.props(), propertyNames), Children: []dbus.Variant{}}
-	if r.submenu && depth != 0 {
-		for _, c := range rows {
-			if c.parent == r.id {
-				n.Children = append(n.Children, dbus.MakeVariant(trayNodeFor(rows, c, depth-1, propertyNames)))
-			}
-		}
-	}
-	return n
+// trayNodeFor builds one node. The menu is flat, so no row has children and
+// the dbusmenu recursionDepth never matters below the root.
+func trayNodeFor(r trayRow, propertyNames []string) trayMenuNode {
+	return trayMenuNode{ID: r.id, Props: trayFilter(r.props(), propertyNames), Children: []dbus.Variant{}}
 }
 
 // GetLayout implements com.canonical.dbusmenu.GetLayout.
@@ -1673,7 +1449,7 @@ func (t *tray) GetLayout(parentID, recursionDepth int32, propertyNames []string)
 	if parentID != trayIDRoot {
 		for _, r := range rows {
 			if r.id == parentID {
-				return rev, trayNodeFor(rows, r, recursionDepth, propertyNames), nil
+				return rev, trayNodeFor(r, propertyNames), nil
 			}
 		}
 		return rev, trayMenuNode{}, dbus.NewError("com.canonical.dbusmenu.Error.InvalidId", []any{"no such item"})
@@ -1688,10 +1464,7 @@ func (t *tray) GetLayout(parentID, recursionDepth int32, propertyNames []string)
 	}
 	if recursionDepth != 0 {
 		for _, r := range rows {
-			if r.parent == trayIDRoot {
-				root.Children = append(root.Children,
-					dbus.MakeVariant(trayNodeFor(rows, r, recursionDepth-1, propertyNames)))
-			}
+			root.Children = append(root.Children, dbus.MakeVariant(trayNodeFor(r, propertyNames)))
 		}
 	}
 	return rev, root, nil
@@ -1754,20 +1527,8 @@ func (t *tray) Event(id int32, eventID string, data dbus.Variant, timestamp uint
 		go t.toggle("mic")
 	case trayIDSpeaker:
 		go t.toggle("speaker")
-	case trayIDBindMic:
-		go t.bindKey("mic")
-	case trayIDBindSpeaker:
-		go t.bindKey("speaker")
-	case trayIDClickMic:
-		go t.setClick("mic")
-	case trayIDClickSpeaker:
-		go t.setClick("speaker")
 	case trayIDQuit:
 		go t.quit()
-	default:
-		if key, ok := trayNotifyKeyByID[id]; ok {
-			go t.toggleNotify(key)
-		}
 	}
 	return nil
 }

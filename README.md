@@ -28,11 +28,12 @@ so on. GNOME needs the *AppIndicator and KStatusNotifierItem Support* extension.
 ts6tray mutes by pressing its own virtual keys, so TeamSpeak has to learn them once. Until
 then, every mute command reports "not bound" along with these steps.
 
-1. In the tray menu, choose **Settings → Bind microphone key…**. A 10 s countdown starts.
+1. Run `ts6tray settings` and activate **Bind microphone key** (space or enter). A 10 s
+   countdown starts, with the steps below on screen. Esc or `q` cancels it.
 2. Switch to TeamSpeak → **Settings → Key Bindings**. Set **Microphone** to **Toggle**, then
    click **Choose** at the end of that line. TeamSpeak now waits for a key.
 3. When the countdown ends ts6tray presses its key and TeamSpeak records it.
-4. Repeat with **Bind speaker key…** and the **Speaker** line.
+4. Repeat with **Bind speaker key** and the **Speaker** line.
 
 The 10 s delay exists because TeamSpeak stops recording a hotkey as soon as its window loses
 focus — you need both windows in that order.
@@ -45,21 +46,21 @@ Settings live in `~/.config/ts6tray/config`. The main way to change them is a te
 ts6tray settings
 ```
 
-A small full-screen UI with every switch below — ↑↓ or `j`/`k` to move, space or enter to
-toggle, `q` to quit. Each toggle is saved immediately and the running daemon picks it up at
-once (`ts6tray reload` does that on its own, if you edit the file by hand). It is a separate,
-short-lived process, so the daemon's memory is untouched by it. The same switches are in the
-tray's right-click menu under **Settings**.
+A small full-screen UI with the key-binding helper and every switch below — ↑↓ or `j`/`k` to
+move, space or enter to toggle, `q` to quit. Each change is saved immediately and the running
+daemon picks it up at once (`ts6tray reload` does that on its own, if you edit the file by
+hand). It is a separate, short-lived process, so the daemon's memory is untouched by it.
 
 Tray: left-click toggles the microphone, middle-click toggles the speaker (swappable in the
-settings). The right-click menu has per-server status, both toggles, **Settings** and
-**Quit**.
+settings). The right-click menu is just per-server status, both toggles and **Quit** —
+everything else lives in `ts6tray settings`.
 
 CLI, with the daemon running:
 
 ```sh
 ts6tray mic toggle        # or: mute / unmute
 ts6tray speaker toggle    # or: mute / unmute
+ts6tray press mic         # press the virtual key once (what the bind helper does)
 ts6tray status
 ts6tray reload            # re-read the config file
 ```
@@ -70,8 +71,8 @@ Mute commands don't queue — a second one while the first is still in progress 
 ## Notifications
 
 Desktop notifications for what happens in your channel and to you. Every one names the
-person. Switch them on and off in `ts6tray settings` or under **Settings → Notifications**;
-the choice is saved in `~/.config/ts6tray/config` as `notify.<kind>=on|off`.
+person. Switch them on and off in `ts6tray settings`; the choice is saved in
+`~/.config/ts6tray/config` as `notify.<kind>=on|off`.
 
 | Notification | Key | Default |
 | --- | --- | --- |
@@ -104,15 +105,17 @@ state (speakers or microphone under a red slash, or the plain microphone when th
 unmuted again), and an arrival or a departure, which is a green person for someone joining
 and a red one for someone leaving, being kicked or dropping out; those icons are unpacked
 beside it in `~/.cache/ts6tray/notify/`. A grouped notification lists its events numbered
-with the newest first and takes that newest event's icon.
+with the newest first and takes that newest event's icon. They are all sent under the name
+**TeamSpeak**, so the notification centre shows one source rather than two.
 
 Below the list are the delivery options, saved the same way:
 
 | Option | Key | What it does |
 | --- | --- | --- |
 | Group bursts (0.5 s) | `notify.batch` | Waits half a second, and half a second again after each further event, then sends the whole burst as one notification with a numbered line per event, newest first. Five people moved at once is one notification, not five. It gives up waiting after 3 s. |
-| Replace previous notification | `notify.replace` | Each new notification takes the place of the last one, so only the newest is on screen. |
+| Replace previous notification | `notify.replace` | Each new notification takes the place of the last one, so only the newest is on screen. Once the previous one has had its display time it is left alone and a fresh notification is sent instead — some servers apply a replacement in place, and would otherwise silently edit a row nobody can see. |
 | Silence while my speakers are muted | `notify.quietWhenDeaf` | **Off by default.** While your speakers are muted on any connected server, event notifications are dropped rather than held back — you muted them to be left alone, and unmuting should not then deliver the backlog. A lost connection still comes through, and so do your own actions (**My own changes**) — muting the speakers silences other people, not the confirmation of what you just did. |
+| Show notifications for | `notify.timeout` | How long one stays on screen: `3`, `5` (the default), `10`, `30` seconds, `never` (until you dismiss it), or `default` to let the notification server decide. |
 
 Kick, ban and timeout wording is best-effort: TeamSpeak has never sent one during a capture,
 so it follows the client's documented event codes rather than an observed message, and a kick

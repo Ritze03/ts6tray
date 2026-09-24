@@ -488,10 +488,10 @@ func (c *TSClient) SetMute(target, mode string) (changed bool, err error) {
 		return true, nil
 	}
 	return false, fmt.Errorf("TeamSpeak accepted the %s press but %s did not change within %s. "+
-		"The button has to be bound once: in TeamSpeak open Settings -> Key Bindings and add the %q action. "+
-		"Then in the ts6tray tray menu choose Settings -> %q, switch to TeamSpeak within 10 seconds and start "+
-		"the hotkey assignment — ts6tray presses the key and TeamSpeak records it: %w",
-		button, flag, wait, action, bind, ErrNotBound)
+		"The button has to be bound once: run `ts6tray settings` and choose %q, then switch to TeamSpeak, "+
+		"open Settings -> Key Bindings and start the hotkey assignment for the %q action within 10 seconds "+
+		"— ts6tray presses the key and TeamSpeak records it: %w",
+		button, flag, wait, bind, action, ErrNotBound)
 }
 
 // Press sends one buttonPress down+up for button (ButtonMic or ButtonSpeaker)

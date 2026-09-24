@@ -7,8 +7,8 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/xml"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -154,10 +154,10 @@ func propOf(t *testing.T, n trayMenuNode, name string) any {
 	return v.Value()
 }
 
-// TestTraySettingsLayout pins the shape the user asked for: a Settings submenu
-// sitting directly above Quit, holding the two bind helpers, a separator and
-// the two left-click radios with microphone selected by default.
-func TestTraySettingsLayout(t *testing.T) {
+// TestTrayMenuIsMinimal pins the menu the user asked for: the server rows, a
+// separator, the two toggles, a separator and Quit. Nothing else — every
+// setting moved to `ts6tray settings`, so no id above Quit may come back.
+func TestTrayMenuIsMinimal(t *testing.T) {
 	tr := newTestTray(t)
 
 	_, root, derr := tr.GetLayout(trayIDRoot, -1, nil)
@@ -169,109 +169,59 @@ func TestTraySettingsLayout(t *testing.T) {
 	for _, n := range top {
 		ids = append(ids, n.ID)
 	}
-	if len(ids) < 2 || ids[len(ids)-1] != trayIDQuit || ids[len(ids)-2] != trayIDSettings {
-		t.Fatalf("root children %v: want Settings (%d) directly before Quit (%d)",
-			ids, trayIDSettings, trayIDQuit)
+	want := []int32{trayIDServer0, trayIDSep1, trayIDMic, trayIDSpeaker, trayIDSep2, trayIDQuit}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("root children = %v, want %v", ids, want)
 	}
-	// The flat toggles stay where they were.
-	if _, ok := findNode(top, trayIDMic); !ok {
-		t.Error("the flat \"Toggle microphone mute\" item disappeared")
-	}
-	if _, ok := findNode(top, trayIDSpeaker); !ok {
-		t.Error("the flat \"Toggle speaker mute\" item disappeared")
-	}
-
-	settings, _ := findNode(top, trayIDSettings)
-	if got := propOf(t, settings, "label"); got != "Settings" {
-		t.Errorf("Settings label = %q, want %q", got, "Settings")
-	}
-	if got := propOf(t, settings, "children-display"); got != "submenu" {
-		t.Errorf("Settings children-display = %v, want submenu", got)
-	}
-
-	kids := nodeChildren(settings)
-	var kidIDs []int32
-	for _, n := range kids {
-		kidIDs = append(kidIDs, n.ID)
-	}
-	want := []int32{trayIDBindMic, trayIDBindSpeaker, trayIDSep3, trayIDClickMic, trayIDClickSpeaker,
-		trayIDSep4, trayIDNotify}
-	if !reflect.DeepEqual(kidIDs, want) {
-		t.Fatalf("Settings children = %v, want %v", kidIDs, want)
-	}
-	if got := propOf(t, kids[0], "label"); got != "Bind microphone key…" {
-		t.Errorf("bind mic label = %q", got)
-	}
-	if got := propOf(t, kids[1], "label"); got != "Bind speaker key…" {
-		t.Errorf("bind speaker label = %q", got)
-	}
-	if got := propOf(t, kids[2], "type"); got != "separator" {
-		t.Errorf("Settings child 3 type = %v, want separator", got)
-	}
-	for _, n := range kids[3:5] {
-		if got := propOf(t, n, "toggle-type"); got != "radio" {
-			t.Errorf("item %d toggle-type = %v, want radio", n.ID, got)
+	for _, n := range top {
+		if len(n.Children) != 0 {
+			t.Errorf("item %d has %d children; the menu is supposed to be flat", n.ID, len(n.Children))
+		}
+		if _, ok := n.Props["children-display"]; ok {
+			t.Errorf("item %d still claims a submenu", n.ID)
+		}
+		if _, ok := n.Props["toggle-type"]; ok {
+			t.Errorf("item %d still has a toggle-type; the radios and checkmarks are gone", n.ID)
 		}
 	}
-	if got := propOf(t, kids[3], "toggle-state"); got != int32(1) {
-		t.Errorf("microphone radio toggle-state = %v, want 1 (the default)", got)
+	// Nothing with a Settings-era id is reachable any more.
+	for id := int32(15); id < trayIDServer0; id++ {
+		if _, ok := tr.rowByID(id); ok {
+			t.Errorf("row %d still exists; ids 15..99 belonged to the Settings submenu", id)
+		}
 	}
-	if got := propOf(t, kids[4], "toggle-state"); got != int32(0) {
-		t.Errorf("speaker radio toggle-state = %v, want 0", got)
+	if got := propOf(t, top[5], "label"); got != "Quit" {
+		t.Errorf("last item label = %q, want Quit", got)
+	}
+	if got := propOf(t, top[2], "label"); got != "Toggle microphone mute" {
+		t.Errorf("item 3 label = %q", got)
+	}
+	if got := propOf(t, top[3], "label"); got != "Toggle speaker mute" {
+		t.Errorf("item 4 label = %q", got)
 	}
 
-	// Depth 1 must stop at the submenu row itself, as dbusmenu prescribes.
+	// Depth 1 is the whole menu now, because nothing nests.
 	_, shallow, derr := tr.GetLayout(trayIDRoot, 1, nil)
 	if derr != nil {
 		t.Fatalf("GetLayout depth 1: %v", derr)
 	}
-	s1, _ := findNode(nodeChildren(shallow), trayIDSettings)
-	if len(s1.Children) != 0 {
-		t.Errorf("GetLayout depth 1 returned %d Settings children, want 0", len(s1.Children))
-	}
-
-	// Asking for the submenu directly must hand back its children.
-	_, sub, derr := tr.GetLayout(trayIDSettings, -1, nil)
-	if derr != nil {
-		t.Fatalf("GetLayout(Settings): %v", derr)
-	}
-	if len(sub.Children) != len(want) {
-		t.Errorf("GetLayout(Settings) returned %d children, want %d", len(sub.Children), len(want))
+	if len(nodeChildren(shallow)) != len(want) {
+		t.Errorf("depth 1 returned %d children, want %d", len(nodeChildren(shallow)), len(want))
 	}
 }
 
-// TestTraySetClickFlipsRadios covers the click on the speaker radio: the marks
-// move, the revision moves with them (which is what makes the host redraw), and
-// the choice is on disk.
-func TestTraySetClickFlipsRadios(t *testing.T) {
+// TestTrayQuitEvent: clicking Quit still calls the quit function.
+func TestTrayQuitEvent(t *testing.T) {
 	tr := newTestTray(t)
-	before := tr.revision
+	quit := make(chan struct{})
+	tr.quit = func() { close(quit) }
 
-	tr.setClick("speaker")
+	tr.Event(trayIDQuit, "clicked", dbus.Variant{}, 0)
 
-	if tr.revision <= before {
-		t.Errorf("revision %d after selecting speaker, want more than %d", tr.revision, before)
-	}
-	if got := tr.clickTarget(); got != "speaker" {
-		t.Errorf("clickTarget = %q, want speaker", got)
-	}
-	_, sub, _ := tr.GetLayout(trayIDSettings, -1, nil)
-	kids := nodeChildren(sub)
-	mic, _ := findNode(kids, trayIDClickMic)
-	spk, _ := findNode(kids, trayIDClickSpeaker)
-	if propOf(t, mic, "toggle-state") != int32(0) || propOf(t, spk, "toggle-state") != int32(1) {
-		t.Errorf("after selecting speaker: mic=%v speaker=%v, want 0 and 1",
-			propOf(t, mic, "toggle-state"), propOf(t, spk, "toggle-state"))
-	}
-	if got := trayReadClick(trayConfigPath()); got != "speaker" {
-		t.Errorf("config on disk says %q, want speaker", got)
-	}
-
-	// Selecting the same target again is a no-op, not a revision bump.
-	rev := tr.revision
-	tr.setClick("speaker")
-	if tr.revision != rev {
-		t.Errorf("re-selecting speaker bumped the revision to %d", tr.revision)
+	select {
+	case <-quit:
+	case <-time.After(2 * time.Second):
+		t.Fatal("clicking Quit did not quit")
 	}
 }
 
@@ -350,7 +300,17 @@ func TestTrayActivateUsesConfiguredTarget(t *testing.T) {
 		t.Errorf("SecondaryActivate toggled %q, want speaker", v)
 	}
 
-	tr.setClick("speaker")
+	// The TUI writes the file and the daemon re-reads it; that is the only way
+	// the target changes now.
+	if err := trayWriteClick(trayConfigPath(), "speaker"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.reloadConfig(); err != nil {
+		t.Fatalf("reloadConfig: %v", err)
+	}
+	if got := tr.clickTarget(); got != "speaker" {
+		t.Fatalf("clickTarget = %q, want speaker", got)
+	}
 	tr.Activate(0, 0)
 	if v := next("Activate with speaker selected"); v != "speaker" {
 		t.Errorf("Activate toggled %q, want speaker", v)
@@ -359,316 +319,6 @@ func TestTrayActivateUsesConfiguredTarget(t *testing.T) {
 	if v := next("SecondaryActivate with speaker selected"); v != "mic" {
 		t.Errorf("SecondaryActivate toggled %q, want mic", v)
 	}
-}
-
-// TestTrayBindHelperPresses walks the helper end to end with the delay turned
-// down: it presses the right button once, and while it is counting down the row
-// says so and a second click is dropped instead of queueing a second press.
-func TestTrayBindHelperPresses(t *testing.T) {
-	tr := newTestTray(t)
-	pressed := make(chan string, 4)
-	started := make(chan struct{})
-	tr.press = func(button string) error {
-		pressed <- button
-		return nil
-	}
-
-	// Hold the first bind inside its countdown while a second click arrives.
-	tr.bindDelay = 250 * time.Millisecond
-	go func() {
-		close(started)
-		tr.bindKey("speaker")
-	}()
-	<-started
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		tr.mu.RLock()
-		pending := tr.binding
-		tr.mu.RUnlock()
-		if pending == "speaker" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the bind countdown never started")
-		}
-		time.Sleep(time.Millisecond)
-	}
-
-	// The row reports the countdown and is disabled.
-	row, ok := tr.rowByID(trayIDBindSpeaker)
-	if !ok {
-		t.Fatal("no bind-speaker row")
-	}
-	if row.label != "Pressing speaker key in 10 s…" || row.enabled {
-		t.Errorf("counting down: label %q enabled %v, want the pending label, disabled", row.label, row.enabled)
-	}
-
-	// A second click while one is pending is ignored.
-	tr.bindKey("mic")
-
-	select {
-	case b := <-pressed:
-		if b != ButtonSpeaker {
-			t.Errorf("pressed %q, want %q", b, ButtonSpeaker)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the bind helper never pressed the button")
-	}
-	select {
-	case b := <-pressed:
-		t.Fatalf("a second press happened (%q); the countdown is not single-flight", b)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	// Once it is over the row is back to normal and a new bind runs.
-	row, _ = tr.rowByID(trayIDBindSpeaker)
-	if row.label != "Bind speaker key…" || !row.enabled {
-		t.Errorf("after the countdown: label %q enabled %v", row.label, row.enabled)
-	}
-	tr.bindDelay = time.Millisecond
-	tr.bindKey("mic")
-	select {
-	case b := <-pressed:
-		if b != ButtonMic {
-			t.Errorf("second bind pressed %q, want %q", b, ButtonMic)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the second bind never pressed anything")
-	}
-}
-
-// TestTrayBindHelperStopsOnShutdown: a pending countdown must not fire a button
-// press after the tray's context is cancelled.
-func TestTrayBindHelperStopsOnShutdown(t *testing.T) {
-	tr := newTestTray(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	tr.ctx = ctx
-	tr.bindDelay = time.Minute
-	pressed := make(chan string, 1)
-	tr.press = func(button string) error { pressed <- button; return nil }
-
-	done := make(chan struct{})
-	go func() { tr.bindKey("mic"); close(done) }()
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("bindKey did not return after the context was cancelled")
-	}
-	select {
-	case b := <-pressed:
-		t.Fatalf("pressed %q after shutdown", b)
-	default:
-	}
-}
-
-// TestTrayBindEventsDispatch is the wiring check: the ids the host clicks reach
-// the right handlers.
-func TestTrayBindEventsDispatch(t *testing.T) {
-	tr := newTestTray(t)
-	tr.bindDelay = time.Millisecond
-	pressed := make(chan string, 2)
-	tr.press = func(button string) error { pressed <- button; return nil }
-
-	tr.Event(trayIDBindMic, "clicked", dbus.Variant{}, 0)
-	select {
-	case b := <-pressed:
-		if b != ButtonMic {
-			t.Errorf("clicking the bind-mic item pressed %q", b)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("clicking the bind-mic item pressed nothing")
-	}
-
-	tr.Event(trayIDClickSpeaker, "clicked", dbus.Variant{}, 0)
-	deadline := time.Now().Add(2 * time.Second)
-	for tr.clickTarget() != "speaker" {
-		if time.Now().After(deadline) {
-			t.Fatal("clicking the speaker radio did not change the click target")
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
-// --- the Notifications submenu ----------------------------------------------
-
-// TestTrayNotificationsLayout pins the new submenu: it sits inside Settings
-// after the left-click radios with a separator in front, its children are
-// checkmarks in the declared order, and the two noisy kinds start off.
-func TestTrayNotificationsLayout(t *testing.T) {
-	tr := newTestTray(t)
-
-	_, sub, derr := tr.GetLayout(trayIDSettings, -1, nil)
-	if derr != nil {
-		t.Fatalf("GetLayout(Settings): %v", derr)
-	}
-	kids := nodeChildren(sub)
-	var ids []int32
-	for _, n := range kids {
-		ids = append(ids, n.ID)
-	}
-	want := []int32{trayIDBindMic, trayIDBindSpeaker, trayIDSep3, trayIDClickMic, trayIDClickSpeaker,
-		trayIDSep4, trayIDNotify}
-	if !reflect.DeepEqual(ids, want) {
-		t.Fatalf("Settings children = %v, want %v", ids, want)
-	}
-	if got := propOf(t, kids[5], "type"); got != "separator" {
-		t.Errorf("item before Notifications is %v, want a separator", got)
-	}
-
-	notif := kids[6]
-	if got := propOf(t, notif, "label"); got != "Notifications" {
-		t.Errorf("Notifications label = %q", got)
-	}
-	if got := propOf(t, notif, "children-display"); got != "submenu" {
-		t.Errorf("Notifications children-display = %v, want submenu", got)
-	}
-
-	items := nodeChildren(notif)
-	// The kind checkmarks, a separator, then the delivery options.
-	if want := len(trayNotifyGroups) + 1 + len(trayNotifyOptions); len(items) != want {
-		t.Fatalf("Notifications has %d children, want %d", len(items), want)
-	}
-	for i, g := range trayNotifyGroups {
-		n := items[i]
-		if want := trayNotifyID[g.key]; n.ID != want {
-			t.Errorf("child %d (%s) id = %d, want %d", i, g.key, n.ID, want)
-		}
-		if got := propOf(t, n, "label"); got != g.label {
-			t.Errorf("child %d label = %q, want %q", i, got, g.label)
-		}
-		if got := propOf(t, n, "toggle-type"); got != "checkmark" {
-			t.Errorf("child %d toggle-type = %v, want checkmark", i, got)
-		}
-		wantState := int32(0)
-		if g.def {
-			wantState = 1
-		}
-		if got := propOf(t, n, "toggle-state"); got != wantState {
-			t.Errorf("%s default toggle-state = %v, want %v", g.key, got, wantState)
-		}
-	}
-
-	// The defaults the user asked for: joins/leaves, moves, kicks and lost
-	// connections on; mute churn, channel messages and — because TeamSpeak
-	// already pops those up itself — private messages and pokes off.
-	// "My own changes" and server broadcasts are off too: the tray icon already
-	// says what we just did, and a broadcast is rare and rarely wanted.
-	off := map[string]bool{"mute": true, "channelMsg": true, "privateMsg": true, "poke": true,
-		"self": true, "serverMsg": true}
-	for _, g := range trayNotifyGroups {
-		if g.def == off[g.key] {
-			t.Errorf("%s defaults to %v", g.key, g.def)
-		}
-	}
-
-	// The separator, then the options.
-	sep := items[len(trayNotifyGroups)]
-	if sep.ID != trayIDSep5 {
-		t.Errorf("separator id = %d, want %d", sep.ID, trayIDSep5)
-	}
-	if got := propOf(t, sep, "type"); got != "separator" {
-		t.Errorf("item after the kinds is %v, want a separator", got)
-	}
-	for i, o := range trayNotifyOptions {
-		n := items[len(trayNotifyGroups)+1+i]
-		if want := trayNotifyID[o.key]; n.ID != want {
-			t.Errorf("option %d (%s) id = %d, want %d", i, o.key, n.ID, want)
-		}
-		if got := propOf(t, n, "label"); got != o.label {
-			t.Errorf("option %d label = %q, want %q", i, got, o.label)
-		}
-		if got := propOf(t, n, "toggle-type"); got != "checkmark" {
-			t.Errorf("option %d toggle-type = %v, want checkmark", i, got)
-		}
-		want := int32(0)
-		if o.def {
-			want = 1
-		}
-		if got := propOf(t, n, "toggle-state"); got != want {
-			t.Errorf("%s default toggle-state = %v, want %v", o.key, got, want)
-		}
-	}
-	var labels []string
-	for _, o := range trayNotifyOptions {
-		labels = append(labels, o.label)
-	}
-	if !reflect.DeepEqual(labels, []string{"Group bursts (0.5 s)", "Replace previous notification",
-		"Silence while my speakers are muted"}) {
-		t.Errorf("option labels = %q", labels)
-	}
-}
-
-// TestTrayNotifyToggleRoundTrip: clicking a checkmark flips it, bumps the
-// revision so the host redraws, writes it to disk and survives a restart.
-func TestTrayNotifyToggleRoundTrip(t *testing.T) {
-	tr := newTestTray(t)
-	before := tr.revision
-
-	// Turn the mute notices on (they default off) and the moves off.
-	tr.Event(trayIDNotify0+3, "clicked", dbus.Variant{}, 0)
-	tr.Event(trayIDNotify0+1, "clicked", dbus.Variant{}, 0)
-	waitForNotify(t, tr, "mute", true)
-	waitForNotify(t, tr, "moved", false)
-
-	if tr.revision <= before {
-		t.Errorf("revision %d after toggling, want more than %d", tr.revision, before)
-	}
-	if !tr.notifyEnabled(noticeMute) {
-		t.Error("noticeMute is still filtered out")
-	}
-	if tr.notifyEnabled(noticeMoved) {
-		t.Error("noticeMoved is still enabled")
-	}
-	// join and leave share one switch, so both must still be on.
-	if !tr.notifyEnabled(noticeJoin) || !tr.notifyEnabled(noticeLeave) {
-		t.Error("the joins/leaves switch moved on its own")
-	}
-
-	_, sub, _ := tr.GetLayout(trayIDNotify, -1, nil)
-	items := nodeChildren(sub)
-	if got := propOf(t, items[3], "toggle-state"); got != int32(1) {
-		t.Errorf("mute checkmark = %v, want 1", got)
-	}
-	if got := propOf(t, items[1], "toggle-state"); got != int32(0) {
-		t.Errorf("moved checkmark = %v, want 0", got)
-	}
-
-	// A fresh tray reads the same choices back off disk.
-	got := trayReadNotify(trayConfigPath())
-	if !got["mute"] || got["moved"] {
-		t.Errorf("config on disk: mute=%v moved=%v, want true and false", got["mute"], got["moved"])
-	}
-	// …and the left-click setting was not trampled by the rewrite.
-	if err := trayWriteClick(trayConfigPath(), "speaker"); err != nil {
-		t.Fatal(err)
-	}
-	tr.toggleNotify("moved")
-	if trayReadClick(trayConfigPath()) != "speaker" {
-		t.Error("writing the notification switches lost click=speaker")
-	}
-	if !trayReadNotify(trayConfigPath())["mute"] {
-		t.Error("writing click= lost the notification switches")
-	}
-}
-
-// waitForNotify waits for an Event-dispatched toggle, which runs in its own
-// goroutine.
-func waitForNotify(t *testing.T, tr *tray, key string, want bool) {
-	t.Helper()
-	for i := 0; i < 200; i++ {
-		tr.mu.RLock()
-		got, ok := tr.notif[key]
-		tr.mu.RUnlock()
-		if ok && got == want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("notify.%s never became %v", key, want)
 }
 
 // TestTrayConfigFormat covers the generalised key=value file: an old one-line
@@ -796,20 +446,23 @@ type notifyCall struct {
 func newNotifyTray(t *testing.T, window, hardCap time.Duration) (*tray, func() []notifyCall) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	tr := &tray{notif: trayReadNotify(trayConfigPath())}
+	tr := &tray{
+		notif:   trayReadNotify(trayConfigPath()),
+		timeout: trayReadTimeout(trayConfigPath()),
+	}
 
 	var mu sync.Mutex
 	var calls []notifyCall
 	var next uint32
-	tr.notifyFn = func(replaces uint32, title, body, icon string) uint32 {
+	tr.notifyFn = func(replaces uint32, title, body, icon string) (uint32, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, notifyCall{replaces, title, body, icon})
 		next++
 		if replaces != 0 {
-			return replaces // a server keeps the id it was told to replace
+			return replaces, nil // a server keeps the id it was told to replace
 		}
-		return next
+		return next, nil
 	}
 	tr.batch = &noticeBatcher{window: window, cap: hardCap, send: tr.notifyEvent}
 	return tr, func() []notifyCall {
@@ -985,14 +638,9 @@ func TestTrayNotifyOptionsRoundTrip(t *testing.T) {
 		t.Errorf("read back: batch=%v replace=%v", got[trayOptBatch], got[trayOptReplace])
 	}
 
-	// Clicking the menu items flips them and saves.
-	tr := &tray{notif: trayReadNotify(path)}
-	tr.Event(trayIDNotifyOpt0+1, "clicked", dbus.Variant{}, 0)
-	waitForNotify(t, tr, trayOptReplace, false)
-	if trayReadNotify(path)[trayOptReplace] {
-		t.Error("notify.replace was not persisted")
-	}
-	// batch was written off above and replace has just been clicked off.
+	// notifyOptOn reads whatever is in the state, switches and defaults alike.
+	m[trayOptReplace] = false
+	tr := &tray{notif: m}
 	if tr.notifyOptOn(trayOptBatch) || tr.notifyOptOn(trayOptReplace) {
 		t.Error("notifyOptOn disagrees with the switches")
 	}
@@ -1278,98 +926,13 @@ func newEmitTray(t *testing.T) (*tray, func() []emitCall) {
 	}
 }
 
-// propsOfEmit pulls the a(ia{sv}) argument out of an ItemsPropertiesUpdated,
-// checking the removed-properties array is there with the right type.
-func propsOfEmit(t *testing.T, c emitCall) []trayMenuProps {
-	t.Helper()
-	if len(c.args) != 2 {
-		t.Fatalf("%s has %d arguments, want 2", c.name, len(c.args))
-	}
-	upd, ok := c.args[0].([]trayMenuProps)
-	if !ok {
-		t.Fatalf("first argument is %T, want []trayMenuProps", c.args[0])
-	}
-	if _, ok := c.args[1].([]trayMenuRemovedProps); !ok {
-		t.Fatalf("second argument is %T, want []trayMenuRemovedProps", c.args[1])
-	}
-	return upd
-}
-
-// TestTrayToggleEmitsPropertiesOnly: flipping a notification checkmark or a
-// left-click radio changes nothing structural, so the host is told about the
-// one property rather than asked to re-read the whole layout.
-func TestTrayToggleEmitsPropertiesOnly(t *testing.T) {
-	t.Run("notification checkmark", func(t *testing.T) {
-		tr, got := newEmitTray(t)
-		rev := tr.revision
-
-		tr.toggleNotify(trayNotifyGroups[0].key)
-
-		calls := got()
-		if len(calls) != 1 {
-			t.Fatalf("emitted %d signals, want 1: %+v", len(calls), calls)
-		}
-		if calls[0].name != trayMenuIface+".ItemsPropertiesUpdated" {
-			t.Fatalf("emitted %s, want ItemsPropertiesUpdated", calls[0].name)
-		}
-		if calls[0].path != trayMenuPath {
-			t.Errorf("path = %v, want %v", calls[0].path, trayMenuPath)
-		}
-		upd := propsOfEmit(t, calls[0])
-		if len(upd) != 1 {
-			t.Fatalf("updated %d items, want 1: %+v", len(upd), upd)
-		}
-		if upd[0].ID != trayIDNotify0 {
-			t.Errorf("updated id %d, want %d", upd[0].ID, trayIDNotify0)
-		}
-		if len(upd[0].Props) != 1 {
-			t.Errorf("sent %d properties, want only toggle-state: %v", len(upd[0].Props), upd[0].Props)
-		}
-		// The first group defaults to on, so switching it flips it to 0.
-		if v, ok := upd[0].Props["toggle-state"]; !ok || v.Value() != int32(0) {
-			t.Errorf("toggle-state = %v (present: %v), want 0", v.Value(), ok)
-		}
-		if tr.revision <= rev {
-			t.Errorf("revision %d, want it bumped past %d", tr.revision, rev)
-		}
-	})
-
-	t.Run("left-click radios", func(t *testing.T) {
-		tr, got := newEmitTray(t)
-
-		tr.setClick("speaker")
-
-		calls := got()
-		if len(calls) != 1 || calls[0].name != trayMenuIface+".ItemsPropertiesUpdated" {
-			t.Fatalf("emitted %+v, want one ItemsPropertiesUpdated", calls)
-		}
-		// Both radios moved: one off, one on.
-		upd := propsOfEmit(t, calls[0])
-		want := map[int32]int32{trayIDClickMic: 0, trayIDClickSpeaker: 1}
-		if len(upd) != len(want) {
-			t.Fatalf("updated %d items, want %d: %+v", len(upd), len(want), upd)
-		}
-		for _, u := range upd {
-			w, ok := want[u.ID]
-			if !ok {
-				t.Errorf("unexpected item %d in the update", u.ID)
-				continue
-			}
-			if v := u.Props["toggle-state"].Value(); v != w {
-				t.Errorf("item %d toggle-state = %v, want %v", u.ID, v, w)
-			}
-		}
-	})
-}
-
-// TestTrayStructuralChangeEmitsLayoutUpdated: anything that adds, removes or
-// relabels a row still has to be a LayoutUpdated, because a host cannot learn
-// about it from toggle-state alone.
-func TestTrayStructuralChangeEmitsLayoutUpdated(t *testing.T) {
-	t.Run("the bind countdown relabels and disables a row", func(t *testing.T) {
+// TestTrayMenuChangeEmitsLayoutUpdated: the menu only ever changes shape now,
+// so every change is a LayoutUpdated carrying the bumped revision.
+func TestTrayMenuChangeEmitsLayoutUpdated(t *testing.T) {
+	t.Run("the toggles becoming usable", func(t *testing.T) {
 		tr, got := newEmitTray(t)
 		tr.mu.Lock()
-		tr.binding = "mic"
+		tr.conns = []Conn{{ID: 1, ServerName: "Home", InputHardware: true}}
 		tr.mu.Unlock()
 
 		tr.refresh()
@@ -1407,45 +970,6 @@ func TestTrayStructuralChangeEmitsLayoutUpdated(t *testing.T) {
 			t.Fatalf("emitted %+v on an unchanged menu, want nothing", calls)
 		}
 	})
-}
-
-// TestTrayToggleOnlyDiff covers the decision itself, away from the plumbing.
-func TestTrayToggleOnlyDiff(t *testing.T) {
-	base := []trayRow{
-		{id: 24, parent: trayIDSettings, label: "Microphone", enabled: true, radio: true, checked: true},
-		{id: 25, parent: trayIDSettings, label: "Speaker", enabled: true, radio: true},
-	}
-	clone := func() []trayRow { return append([]trayRow(nil), base...) }
-
-	if _, ok := trayToggleOnlyDiff(base, clone()); ok {
-		t.Error("an identical pair reports a toggle diff, want none")
-	}
-
-	flipped := clone()
-	flipped[0].checked, flipped[1].checked = false, true
-	upd, ok := trayToggleOnlyDiff(base, flipped)
-	if !ok || len(upd) != 2 {
-		t.Fatalf("flipped radios: ok=%v upd=%+v, want two updates", ok, upd)
-	}
-
-	relabelled := clone()
-	relabelled[0].label = "Mic"
-	if _, ok := trayToggleOnlyDiff(base, relabelled); ok {
-		t.Error("a relabelled row reports a toggle-only diff")
-	}
-
-	disabled := clone()
-	disabled[0].checked, disabled[0].enabled = false, false
-	if _, ok := trayToggleOnlyDiff(base, disabled); ok {
-		t.Error("a row that also changed enabled reports a toggle-only diff")
-	}
-
-	if _, ok := trayToggleOnlyDiff(base, base[:1]); ok {
-		t.Error("a removed row reports a toggle-only diff")
-	}
-	if _, ok := trayToggleOnlyDiff(nil, base); ok {
-		t.Error("building the rows from nothing reports a toggle-only diff")
-	}
 }
 
 // --- "Silence while my speakers are muted" ---------------------------------
@@ -1580,12 +1104,19 @@ func TestTrayReloadConfigPicksUpAnotherProcessesWrite(t *testing.T) {
 	if !tr.notifyEnabled(noticeMute) || !tr.notifyEnabled(noticeSelf) {
 		t.Error("the reloaded switches did not take")
 	}
-	if tr.revision == before {
-		t.Error("the revision did not move, so the host never redraws the menu")
+	// The menu shows none of this any more, so it must not churn either.
+	if tr.revision != before {
+		t.Errorf("revision %d, want it left at %d: no setting is in the menu", tr.revision, before)
 	}
-	row, ok := tr.rowByID(trayNotifyID["self"])
-	if !ok || !row.checked {
-		t.Errorf("the 'My own changes' checkmark is %+v, want checked", row)
+	// …and the display time comes along with the rest.
+	if err := trayWriteTimeout(path, "30"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.reloadConfig(); err != nil {
+		t.Fatalf("reloadConfig: %v", err)
+	}
+	if got := tr.notifyTimeout(); got != 30000 {
+		t.Errorf("notifyTimeout = %d, want 30000", got)
 	}
 }
 
@@ -1647,16 +1178,188 @@ func TestConfigNewKeysRoundTrip(t *testing.T) {
 			t.Errorf("%s was not written", g.key)
 		}
 	}
-	// …and a menu id of its own.
-	ids := map[int32]string{}
-	for _, g := range trayNotifySwitches {
-		id, ok := trayNotifyID[g.key]
-		if !ok {
-			t.Errorf("%s has no menu id", g.key)
+}
+
+// --- the display time and the replace window --------------------------------
+
+// TestTrayNotifyTimeout: the config value becomes Notify's expire_timeout. The
+// spec's -1 is "server decides" and 0 is "never expires"; everything else is
+// milliseconds, and an unset or nonsense file means five seconds.
+func TestTrayNotifyTimeout(t *testing.T) {
+	for _, c := range []struct {
+		value string
+		want  int32
+	}{
+		{"default", -1},
+		{"never", 0},
+		{"3", 3000},
+		{"5", 5000},
+		{"10", 10000},
+		{"30", 30000},
+		{"", 5000},
+		{"trumpet", 5000},
+	} {
+		if got := trayTimeoutMillis(c.value); got != c.want {
+			t.Errorf("trayTimeoutMillis(%q) = %d, want %d", c.value, got, c.want)
 		}
-		if other, dup := ids[id]; dup {
-			t.Errorf("%s and %s share menu id %d", g.key, other, id)
+	}
+	// Only "never" may be sticky; every other value has to expire.
+	for _, v := range trayNotifyTimeouts {
+		ms := trayTimeoutMillis(v)
+		if v == "never" && ms != 0 {
+			t.Errorf("never = %d, want 0", ms)
 		}
-		ids[id] = g.key
+		if v != "never" && v != "default" && ms <= 0 {
+			t.Errorf("%s = %d, want a positive timeout", v, ms)
+		}
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path := trayConfigPath()
+	if got := trayReadTimeout(path); got != trayNotifyTimeoutDef {
+		t.Errorf("a config with no notify.timeout reads %q, want %q", got, trayNotifyTimeoutDef)
+	}
+	if err := trayWriteTimeout(path, "never"); err != nil {
+		t.Fatal(err)
+	}
+	if got := trayReadTimeout(path); got != "never" {
+		t.Errorf("round trip: read %q, want never", got)
+	}
+	if !strings.Contains(readFile(t, path), "notify.timeout=never\n") {
+		t.Errorf("the file is missing notify.timeout:\n%s", readFile(t, path))
+	}
+	// Writing the switches must not disturb it, and vice versa.
+	if err := trayWriteNotify(path, trayNotifyDefaults()); err != nil {
+		t.Fatal(err)
+	}
+	if got := trayReadTimeout(path); got != "never" {
+		t.Errorf("trayWriteNotify trampled notify.timeout: %q", got)
+	}
+
+	// The cycle the TUI walks, in order and wrapping.
+	v := trayNotifyTimeouts[0]
+	var seen []string
+	for range trayNotifyTimeouts {
+		seen = append(seen, v)
+		v = trayNextTimeout(v)
+	}
+	if !reflect.DeepEqual(seen, trayNotifyTimeouts) || v != trayNotifyTimeouts[0] {
+		t.Errorf("cycle = %v (then %q), want %v wrapping", seen, v, trayNotifyTimeouts)
+	}
+	if got := trayNextTimeout("trumpet"); got != trayNotifyTimeoutDef {
+		t.Errorf("an unknown value cycles to %q, want the default", got)
+	}
+}
+
+// TestTrayNotifyAppName: the notifications say they come from TeamSpeak, which
+// is what the user sees as the source.
+func TestTrayNotifyAppName(t *testing.T) {
+	if trayAppName != "TeamSpeak" {
+		t.Errorf("app_name = %q, want TeamSpeak", trayAppName)
+	}
+}
+
+// TestTrayReplaceWindowStops: a notification the server can no longer be
+// showing must not be "replaced" — some servers apply that in place, silently
+// editing something nobody can see. Past the display time we send a fresh one.
+func TestTrayReplaceWindowStops(t *testing.T) {
+	tr, got := newNotifyTray(t, time.Hour, time.Hour)
+	tr.notif[trayOptBatch] = false
+	tr.timeout = "5"
+	now := time.Now()
+	tr.now = func() time.Time { return now }
+
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+	now = now.Add(2 * time.Second) // still inside the five seconds
+	tr.onNotice(notice{kind: noticeJoin, title: "B joined your channel"})
+	now = now.Add(9 * time.Second) // long gone
+	tr.onNotice(notice{kind: noticeJoin, title: "C joined your channel"})
+
+	calls := got()
+	if len(calls) != 3 {
+		t.Fatalf("%d notifications, want 3", len(calls))
+	}
+	if calls[1].replaces != 1 {
+		t.Errorf("inside the window: replaces_id = %d, want 1", calls[1].replaces)
+	}
+	if calls[2].replaces != 0 {
+		t.Errorf("past the window: replaces_id = %d, want a fresh notification (0)", calls[2].replaces)
+	}
+
+	// "never" means it really does stay up, so replacing stays right forever.
+	if w := trayReplaceWindow("never"); w != 0 {
+		t.Errorf("trayReplaceWindow(never) = %v, want no limit", w)
+	}
+	if w := trayReplaceWindow("default"); w != trayDefaultExpiry {
+		t.Errorf("trayReplaceWindow(default) = %v, want %v", w, trayDefaultExpiry)
+	}
+	if w := trayReplaceWindow("30"); w != 30*time.Second {
+		t.Errorf("trayReplaceWindow(30) = %v, want 30s", w)
+	}
+}
+
+// TestTrayNotificationClosedResetsReplace: once the server says our
+// notification is gone, the next event opens a new one.
+func TestTrayNotificationClosedResetsReplace(t *testing.T) {
+	tr, got := newNotifyTray(t, time.Hour, time.Hour)
+	tr.notif[trayOptBatch] = false
+
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+	tr.mu.RLock()
+	id := tr.lastEventID
+	tr.mu.RUnlock()
+	if id == 0 {
+		t.Fatal("no id was recorded")
+	}
+
+	tr.onNotificationClosed(id + 99) // somebody else's notification
+	tr.onNotice(notice{kind: noticeJoin, title: "B joined your channel"})
+	if c := got(); c[1].replaces != id {
+		t.Errorf("an unrelated close reset our id: replaces_id = %d, want %d", c[1].replaces, id)
+	}
+
+	tr.mu.RLock()
+	id = tr.lastEventID
+	tr.mu.RUnlock()
+	tr.onNotificationClosed(id)
+	tr.onNotice(notice{kind: noticeJoin, title: "C joined your channel"})
+	if c := got(); c[2].replaces != 0 {
+		t.Errorf("after NotificationClosed: replaces_id = %d, want 0", c[2].replaces)
+	}
+}
+
+// TestTrayNotifyRetriesAfterAnError: if a replacing Notify fails, the id it
+// tried to replace is dropped and the notice is sent once more as a new one,
+// so the news still reaches the screen.
+func TestTrayNotifyRetriesAfterAnError(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tr := &tray{
+		notif:   trayReadNotify(trayConfigPath()),
+		timeout: trayReadTimeout(trayConfigPath()),
+	}
+	tr.notif[trayOptBatch] = false
+	tr.lastEventID, tr.lastEventAt = 7, time.Now()
+
+	var mu sync.Mutex
+	var seen []uint32
+	tr.notifyFn = func(replaces uint32, title, body, icon string) (uint32, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, replaces)
+		if replaces != 0 {
+			return 0, errors.New("org.freedesktop.DBus.Error.ServiceUnknown")
+		}
+		return 12, nil
+	}
+
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(seen, []uint32{7, 0}) {
+		t.Fatalf("Notify replaces_id sequence = %v, want the retry [7 0]", seen)
+	}
+	if tr.lastEventID != 12 {
+		t.Errorf("lastEventID = %d, want the retry's id 12", tr.lastEventID)
 	}
 }

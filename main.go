@@ -22,6 +22,7 @@ usage:
   ts6tray --daemon [--addr host:port]      run the tray daemon (default 127.0.0.1:5899)
   ts6tray settings                         change the settings in the terminal
   ts6tray mic|speaker toggle|mute|unmute   mute control via the running daemon
+  ts6tray press mic|speaker                press the virtual key once (key binding)
   ts6tray status                           print the daemon's view of TeamSpeak
   ts6tray reload                           make the running daemon re-read its config
   ts6tray install                          copy to ~/.local/bin and offer autorun
@@ -48,7 +49,7 @@ func main() {
 		os.Exit(runDaemon(os.Args[1:]))
 	case "settings":
 		os.Exit(RunSettings(os.Stdin, os.Stdout))
-	case "mic", "speaker", "status", "reload":
+	case "mic", "speaker", "press", "status", "reload":
 		os.Exit(RunIPCClient(SocketPath(), os.Args[1:], os.Stdout))
 	case "install":
 		os.Exit(RunInstall(os.Stdin, os.Stdout))

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -91,7 +92,7 @@ func trayWriteClick(path, click string) error {
 	return trayWriteConfig(path, kv)
 }
 
-// trayNotifyGroup is one on/off switch in Settings -> Notifications. One switch
+// trayNotifyGroup is one on/off switch in the Notifications list. One switch
 // can cover more than one noticeKind: "joins or leaves" is a single choice for
 // the user but two kinds on the wire.
 type trayNotifyGroup struct {
@@ -123,7 +124,7 @@ var trayNotifyGroups = []trayNotifyGroup{
 }
 
 // trayNotifyOptions are the delivery switches at the bottom of the same
-// submenu. They govern no noticeKind, so kinds is nil and notifyEnabled never
+// list. They govern no noticeKind, so kinds is nil and notifyEnabled never
 // sees them; notifyOptOn reads them instead.
 const (
 	trayOptBatch         = "batch"
@@ -188,4 +189,76 @@ func trayWriteNotify(path string, m map[string]bool) error {
 		kv["notify."+g.key] = v
 	}
 	return trayWriteConfig(path, kv)
+}
+
+// --- the notification display time ------------------------------------------
+
+// trayOptTimeout is the config key suffix of the display-time setting:
+// notify.timeout. It is not a switch, so it is not in trayNotifySwitches and
+// trayWriteNotify leaves it alone.
+const trayOptTimeout = "timeout"
+
+// trayNotifyTimeouts are the values the setting cycles through, in order.
+// "default" hands the decision to the notification server, "never" asks it to
+// leave the notification up until it is dismissed, and a number is seconds.
+var trayNotifyTimeouts = []string{"default", "3", "5", "10", "30", "never"}
+
+// trayNotifyTimeoutDef is what a config file that predates the setting gets:
+// five seconds, because the servers' own default leaves ts6tray's notices up
+// for far longer than anyone wants.
+const trayNotifyTimeoutDef = "5"
+
+// trayNotifyTimeoutLabel renders one value for the UI.
+func trayNotifyTimeoutLabel(v string) string {
+	switch v {
+	case "default", "never":
+		return v
+	}
+	return v + " s"
+}
+
+// trayNextTimeout is the value after v, wrapping. An unknown v restarts at the
+// default.
+func trayNextTimeout(v string) string {
+	for i, t := range trayNotifyTimeouts {
+		if t == v {
+			return trayNotifyTimeouts[(i+1)%len(trayNotifyTimeouts)]
+		}
+	}
+	return trayNotifyTimeoutDef
+}
+
+// trayReadTimeout reads the display time. Anything missing or unrecognised is
+// the default.
+func trayReadTimeout(path string) string {
+	v := trayReadConfig(path)["notify."+trayOptTimeout]
+	for _, t := range trayNotifyTimeouts {
+		if t == v {
+			return v
+		}
+	}
+	return trayNotifyTimeoutDef
+}
+
+// trayWriteTimeout persists the display time, leaving every other key alone.
+func trayWriteTimeout(path, v string) error {
+	kv := trayReadConfig(path)
+	kv["notify."+trayOptTimeout] = v
+	return trayWriteConfig(path, kv)
+}
+
+// trayTimeoutMillis is the value as Notify's expire_timeout: -1 lets the server
+// decide, 0 means never expire, anything else is milliseconds.
+func trayTimeoutMillis(v string) int32 {
+	switch v {
+	case "default":
+		return -1
+	case "never":
+		return 0
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return int32(n) * 1000
+	}
+	n, _ := strconv.Atoi(trayNotifyTimeoutDef)
+	return int32(n) * 1000
 }

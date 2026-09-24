@@ -30,6 +30,10 @@ import (
 type ipcBackend interface {
 	Snapshot() (conns []Conn, icon Icon, up bool)
 	SetMute(target, mode string) (changed bool, err error)
+	// Press sends one raw button press and waits for nothing. It is what the
+	// `ts6tray settings` bind helper drives while TeamSpeak is recording a
+	// hotkey, where there is no flag change to wait for.
+	Press(button string) error
 }
 
 const (
@@ -43,7 +47,7 @@ const (
 	ipcMaxRequest = 4096
 )
 
-const ipcUsage = "usage:\n  ts6tray mic|speaker toggle|mute|unmute\n  ts6tray status\n  ts6tray reload"
+const ipcUsage = "usage:\n  ts6tray mic|speaker toggle|mute|unmute\n  ts6tray press mic|speaker\n  ts6tray status\n  ts6tray reload"
 
 // ipcNotRunning is what the CLI prints when nothing answers the socket.
 const ipcNotRunning = "ts6tray daemon not running — start it with `ts6tray --daemon`"
@@ -202,6 +206,18 @@ func ipcDispatch(b ipcBackend, reload func() error, words []string) (ok bool, bo
 			return false, err.Error()
 		}
 		return true, "settings reloaded"
+	case "press":
+		if len(words) != 2 {
+			return false, "bad request: " + strings.Join(words, " ") + "\n" + ipcUsage
+		}
+		button, ok := ipcButton(words[1])
+		if !ok {
+			return false, "unknown press target " + strconv.Quote(words[1]) + "\n" + ipcUsage
+		}
+		if err := b.Press(button); err != nil {
+			return false, err.Error()
+		}
+		return true, "pressed"
 	case "mic", "speaker":
 		if len(words) != 2 {
 			return false, "bad request: " + strings.Join(words, " ") + "\n" + ipcUsage
@@ -214,6 +230,18 @@ func ipcDispatch(b ipcBackend, reload func() error, words []string) (ok bool, bo
 		return ipcSetMute(b, words[0], words[1])
 	}
 	return false, "unknown command " + strconv.Quote(words[0]) + "\n" + ipcUsage
+}
+
+// ipcButton maps a press target to the virtual button name. It is the only
+// place the socket's spelling meets ts.go's constants.
+func ipcButton(target string) (string, bool) {
+	switch target {
+	case "mic":
+		return ButtonMic, true
+	case "speaker":
+		return ButtonSpeaker, true
+	}
+	return "", false
 }
 
 // ipcSetMute forwards to the backend (D12: the press-only-if-different logic
@@ -361,6 +389,10 @@ func ipcValidArgs(args []string) bool {
 	case 1:
 		return args[0] == "status" || args[0] == "reload"
 	case 2:
+		if args[0] == "press" {
+			_, ok := ipcButton(args[1])
+			return ok
+		}
 		switch args[0] {
 		case "mic", "speaker":
 		default:

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,9 @@ type fakeBackend struct {
 	changed bool
 	err     error
 
-	calls []string // "target mode", in order
+	pressErr error
+
+	calls []string // "target mode", "press <button>", in order
 }
 
 func (f *fakeBackend) Snapshot() ([]Conn, Icon, bool) {
@@ -41,6 +44,13 @@ func (f *fakeBackend) SetMute(target, mode string) (bool, error) {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, target+" "+mode)
 	return f.changed, f.err
+}
+
+func (f *fakeBackend) Press(button string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "press "+button)
+	return f.pressErr
 }
 
 func (f *fakeBackend) callLog() []string {
@@ -255,6 +265,10 @@ func TestBadArgsExit2WithoutDialing(t *testing.T) {
 		{"mic", "loud"},
 		{"nose", "toggle"},
 		{"mic", "toggle", "please"},
+		{"press"},
+		{"press", "nose"},
+		{"press", "mic", "twice"},
+		{"press", "toggle"},
 		{"--help"},
 	} {
 		code, out := run(t, path, args...)
@@ -649,5 +663,79 @@ func TestTrayReloadHandle(t *testing.T) {
 	rl.set(func() error { called = true; return nil })
 	if err := rl.Reload(); err != nil || !called {
 		t.Errorf("Reload() = %v, called = %v", err, called)
+	}
+}
+
+// --- press ----------------------------------------------------------------
+
+// TestPressSendsTheVirtualKey: `ts6tray press mic|speaker` reaches Press with
+// the right button and reports "pressed". It is what the `ts6tray settings`
+// bind helper drives, and what a window-manager bind can use for debugging.
+func TestPressSendsTheVirtualKey(t *testing.T) {
+	b := &fakeBackend{up: true}
+	path, _ := serve(t, b)
+
+	for _, c := range []struct{ target, button string }{
+		{"mic", ButtonMic},
+		{"speaker", ButtonSpeaker},
+	} {
+		code, out := run(t, path, "press", c.target)
+		if code != 0 {
+			t.Errorf("press %s: exit %d, want 0 (output %q)", c.target, code, out)
+		}
+		if strings.TrimSpace(out) != "pressed" {
+			t.Errorf("press %s: output %q, want \"pressed\"", c.target, out)
+		}
+	}
+	want := []string{"press " + ButtonMic, "press " + ButtonSpeaker}
+	if got := b.callLog(); !reflect.DeepEqual(got, want) {
+		t.Errorf("backend calls = %v, want %v", got, want)
+	}
+}
+
+// TestPressErrorPassesThroughVerbatim: a press that cannot happen reports the
+// backend's own words, which is what the TUI puts on its status line.
+func TestPressErrorPassesThroughVerbatim(t *testing.T) {
+	b := &fakeBackend{up: true, pressErr: ErrNotConnected}
+	path, _ := serve(t, b)
+
+	code, out := run(t, path, "press", "mic")
+	if code != 1 {
+		t.Errorf("exit %d, want 1", code)
+	}
+	if strings.TrimSpace(out) != ErrNotConnected.Error() {
+		t.Errorf("output %q, want %q", out, ErrNotConnected.Error())
+	}
+}
+
+// TestPressIsInTheUsage: the CLI advertises it, because it is a useful bind.
+func TestPressIsInTheUsage(t *testing.T) {
+	if !strings.Contains(ipcUsage, "ts6tray press mic|speaker") {
+		t.Errorf("usage does not mention press:\n%s", ipcUsage)
+	}
+	if !strings.Contains(usage, "ts6tray press mic|speaker") {
+		t.Errorf("the top-level usage does not mention press:\n%s", usage)
+	}
+}
+
+// TestPressBadArgsRejectedByTheServerToo: the socket is a trust boundary, so
+// the server validates what the client already refused to send.
+func TestPressBadArgsRejectedByTheServerToo(t *testing.T) {
+	b := &fakeBackend{up: true}
+	for _, words := range [][]string{
+		{"press"},
+		{"press", "nose"},
+		{"press", "mic", "again"},
+	} {
+		ok, body := ipcDispatch(b, nil, words)
+		if ok {
+			t.Errorf("%v was accepted", words)
+		}
+		if !strings.Contains(body, "usage:") {
+			t.Errorf("%v: body %q lacks the usage", words, body)
+		}
+	}
+	if got := b.callLog(); len(got) != 0 {
+		t.Errorf("the backend was called anyway: %v", got)
 	}
 }
