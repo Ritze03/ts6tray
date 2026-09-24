@@ -217,12 +217,14 @@ func trayNotifyTimeoutLabel(v string) string {
 	return v + " s"
 }
 
-// trayNextTimeout is the value after v, wrapping. An unknown v restarts at the
+// trayNextTimeout is the value step places from v, wrapping either way: step
+// +1 is the one after it, -1 the one before. An unknown v restarts at the
 // default.
-func trayNextTimeout(v string) string {
+func trayNextTimeout(v string, step int) string {
+	n := len(trayNotifyTimeouts)
 	for i, t := range trayNotifyTimeouts {
 		if t == v {
-			return trayNotifyTimeouts[(i+1)%len(trayNotifyTimeouts)]
+			return trayNotifyTimeouts[((i+step)%n+n)%n]
 		}
 	}
 	return trayNotifyTimeoutDef

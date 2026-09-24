@@ -242,7 +242,11 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		if s.cursor != settingsRowClick && settingsRowKeys()[s.cursor] != trayOptTimeout {
 			return s, settingsActNone
 		}
-		return settingsToggle(s), settingsActWrite
+		step := 1
+		if key == "left" {
+			step = -1
+		}
+		return settingsToggle(s, step), settingsActWrite
 	case "toggle":
 		if s.cursor < len(settingsBindRows) {
 			// Activating a bind row starts the countdown, or restarts it when
@@ -252,15 +256,17 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			s.status = ""
 			return s, settingsActNone
 		}
-		return settingsToggle(s), settingsActWrite
+		return settingsToggle(s, 1), settingsActWrite
 	}
 	return s, settingsActNone
 }
 
 // settingsToggle flips or cycles whatever the cursor is on: the click target,
-// the display time, or a switch. The map is copied, so the returned state never
-// shares storage with the one that went in.
-func settingsToggle(s settingsState) settingsState {
+// the display time, or a switch. step is which way the display time moves, +1
+// forward and -1 back; the other rows have two values, so it does not matter
+// there. The map is copied, so the returned state never shares storage with
+// the one that went in.
+func settingsToggle(s settingsState, step int) settingsState {
 	notif := make(map[string]bool, len(s.notif))
 	for k, v := range s.notif {
 		notif[k] = v
@@ -275,7 +281,7 @@ func settingsToggle(s settingsState) settingsState {
 	}
 	key := settingsRowKeys()[s.cursor]
 	if key == trayOptTimeout {
-		s.timeout = trayNextTimeout(s.timeout)
+		s.timeout = trayNextTimeout(s.timeout, step)
 		return s
 	}
 	s.notif[key] = !s.notif[key]

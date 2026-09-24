@@ -1241,13 +1241,27 @@ func TestTrayNotifyTimeout(t *testing.T) {
 	var seen []string
 	for range trayNotifyTimeouts {
 		seen = append(seen, v)
-		v = trayNextTimeout(v)
+		v = trayNextTimeout(v, 1)
 	}
 	if !reflect.DeepEqual(seen, trayNotifyTimeouts) || v != trayNotifyTimeouts[0] {
 		t.Errorf("cycle = %v (then %q), want %v wrapping", seen, v, trayNotifyTimeouts)
 	}
-	if got := trayNextTimeout("trumpet"); got != trayNotifyTimeoutDef {
+	if got := trayNextTimeout("trumpet", 1); got != trayNotifyTimeoutDef {
 		t.Errorf("an unknown value cycles to %q, want the default", got)
+	}
+
+	// And backwards, wrapping the other way.
+	for _, c := range []struct{ from, want string }{
+		{"default", "never"},
+		{"3", "default"},
+		{"never", "30"},
+	} {
+		if got := trayNextTimeout(c.from, -1); got != c.want {
+			t.Errorf("back from %q = %q, want %q", c.from, got, c.want)
+		}
+	}
+	if got := trayNextTimeout("never", 1); got != "default" {
+		t.Errorf("forward from \"never\" = %q, want the default value", got)
 	}
 }
 

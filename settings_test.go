@@ -473,13 +473,16 @@ func TestSettingsTimeoutRowCycles(t *testing.T) {
 		t.Fatalf("loaded timeout = %q, want %q", s.timeout, trayNotifyTimeoutDef)
 	}
 
-	for _, key := range []string{"toggle", "left", "right"} {
-		next, act := settingsPress(s, key)
+	for _, c := range []struct {
+		key  string
+		step int
+	}{{"toggle", 1}, {"left", -1}, {"right", 1}} {
+		next, act := settingsPress(s, c.key)
 		if act != settingsActWrite {
-			t.Errorf("%s: act = %v, want a write", key, act)
+			t.Errorf("%s: act = %v, want a write", c.key, act)
 		}
-		if next.timeout != trayNextTimeout(s.timeout) {
-			t.Errorf("%s: timeout = %q, want %q", key, next.timeout, trayNextTimeout(s.timeout))
+		if want := trayNextTimeout(s.timeout, c.step); next.timeout != want {
+			t.Errorf("%s: timeout = %q, want %q", c.key, next.timeout, want)
 		}
 	}
 
