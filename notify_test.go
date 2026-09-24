@@ -1,0 +1,566 @@
+package main
+
+import (
+	"encoding/json"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// --- helpers ---------------------------------------------------------------
+
+// run5Roster is a roster seeded from run 5's auth snapshot: our connection is
+// 4, our client id 30 ("Ritze") in channel 23, and the second account is client
+// 33 ("RitzeTest"), parked in channel 24 with both mute flags set.
+func run5Roster(t *testing.T) *roster {
+	t.Helper()
+	b := fixture(t, "auth_run5.json")
+	var env struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("parse auth fixture: %v", err)
+	}
+	var r roster
+	r.auth(env.Payload)
+	return &r
+}
+
+// line renders a notice for a readable test failure.
+func line(n notice) string {
+	s := n.kind.String() + " | " + n.title
+	if n.body != "" {
+		s += " | " + n.body
+	}
+	return s
+}
+
+func lines(ns []notice) []string {
+	out := make([]string, 0, len(ns))
+	for _, n := range ns {
+		out = append(out, line(n))
+	}
+	return out
+}
+
+// applyAll replays raw messages and collects everything the roster produced.
+func applyAll(r *roster, msgs []json.RawMessage) []notice {
+	var out []notice
+	for _, m := range msgs {
+		out = append(out, r.apply(m)...)
+	}
+	return out
+}
+
+func wantNotices(t *testing.T, got []notice, want []string) {
+	t.Helper()
+	if g := lines(got); !reflect.DeepEqual(g, want) {
+		t.Errorf("notices:\n got %#v\nwant %#v", g, want)
+	}
+}
+
+// --- the fixture replay ----------------------------------------------------
+
+// TestRosterReplaysRun5 pins the exact, ordered output of replaying the whole
+// run-5 capture on top of run 5's snapshot.
+//
+// Note two things the capture contains that the hand-written brief did not
+// mention: client 23 ("UserA") was in our channel at
+// snapshot time and leaves and rejoins it in the middle of the RitzeTest
+// sequence, and the eight mute flips arrive interleaved with nothing else. The
+// mute and channel-message notices come out of the roster unconditionally —
+// they are off by default, but that filtering happens in the tray, not here.
+func TestRosterReplaysRun5(t *testing.T) {
+	r := run5Roster(t)
+	got := applyAll(r, captureLines(t, "events_run5_channel.jsonl"))
+
+	want := []string{
+		"join | RitzeTest joined your channel",
+		"leave | RitzeTest left your channel",
+		"leave | UserA left your channel",
+		"moved | Ritze moved RitzeTest into your channel",
+		"join | UserA joined your channel",
+		"moved | Ritze moved RitzeTest out of your channel",
+		"moved | Ritze moved RitzeTest into your channel",
+		"mute | RitzeTest unmuted their speakers",
+		"mute | RitzeTest unmuted their microphone",
+		"mute | RitzeTest muted their speakers",
+		"mute | RitzeTest unmuted their speakers",
+		"mute | RitzeTest muted their microphone",
+		"mute | RitzeTest unmuted their microphone",
+		"mute | RitzeTest muted their microphone",
+		"mute | RitzeTest muted their speakers",
+		"poke | RitzeTest poked you",
+		"privateMsg | Message from RitzeTest | hi",
+		"channelMsg | RitzeTest in channel | hi",
+		"channelMsg | UserA in channel | hi",
+	}
+	wantNotices(t, got, want)
+}
+
+// TestRosterReplayWithDefaultFilterMatchesTheTray applies the shipped defaults
+// to the same replay: the mute flips, the channel chatter and — because
+// TeamSpeak already pops those up itself — the poke and the private message
+// disappear, which is the quiet menu the user gets out of the box.
+func TestRosterReplayWithDefaultFilterMatchesTheTray(t *testing.T) {
+	r := run5Roster(t)
+	all := applyAll(r, captureLines(t, "events_run5_channel.jsonl"))
+
+	defs := trayNotifyDefaults()
+	var got []notice
+	for _, n := range all {
+		if defs[trayNotifyKindGroup[n.kind]] {
+			got = append(got, n)
+		}
+	}
+	want := []string{
+		"join | RitzeTest joined your channel",
+		"leave | RitzeTest left your channel",
+		"leave | UserA left your channel",
+		"moved | Ritze moved RitzeTest into your channel",
+		"join | UserA joined your channel",
+		"moved | Ritze moved RitzeTest out of your channel",
+		"moved | Ritze moved RitzeTest into your channel",
+	}
+	wantNotices(t, got, want)
+}
+
+// TestRosterIgnoresUnrelatedAndSelfEvents: the run-5 capture carries 7
+// clientPropertiesUpdated for clients outside our channel with no mute change,
+// 214 talkStatusChanged, 7 clientChannelGroupChanged and a clientChatComposing.
+// None of them may produce a notice, and nothing in the whole replay may be
+// about us (client 30, "Ritze") as the subject.
+func TestRosterIgnoresUnrelatedAndSelfEvents(t *testing.T) {
+	r := run5Roster(t)
+	for _, m := range captureLines(t, "events_run5_channel.jsonl") {
+		var env struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(m, &env); err != nil {
+			t.Fatal(err)
+		}
+		ns := r.apply(m)
+		switch env.Type {
+		case "talkStatusChanged", "clientChannelGroupChanged", "clientChatComposing",
+			"clientSelfPropertyUpdated", "streamInfoReplace":
+			if len(ns) != 0 {
+				t.Errorf("%s produced %v, want nothing", env.Type, lines(ns))
+			}
+		}
+	}
+
+	// "Ritze" only ever appears as the invoker of a move, never as the subject.
+	r2 := run5Roster(t)
+	for _, n := range applyAll(r2, captureLines(t, "events_run5_channel.jsonl")) {
+		switch n.kind {
+		case noticeJoin, noticeLeave, noticeMute:
+			if strings.HasPrefix(n.title, "Ritze") && !strings.HasPrefix(n.title, "RitzeTest") {
+				t.Errorf("notice about ourselves: %q", line(n))
+			}
+		}
+	}
+}
+
+// --- synthetic events ------------------------------------------------------
+
+// moved builds a clientMoved message; extra is merged into the payload.
+func moved(clientID int, oldCh, newCh string, typ int, extra map[string]any) json.RawMessage {
+	p := map[string]any{
+		"clientId":     clientID,
+		"connectionId": 4,
+		"oldChannelId": oldCh,
+		"newChannelId": newCh,
+		"type":         typ,
+		"visibility":   1,
+	}
+	for k, v := range extra {
+		p[k] = v
+	}
+	b, err := json.Marshal(map[string]any{"type": "clientMoved", "payload": p})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func status(connID, st, errCode int, info map[string]any) json.RawMessage {
+	p := map[string]any{"connectionId": connID, "status": st, "error": errCode}
+	if info != nil {
+		p["info"] = info
+	}
+	b, err := json.Marshal(map[string]any{"type": "connectStatusChanged", "payload": p})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// TestRosterKickWordings covers clientMoved types 3..6 out of our channel. None
+// of them has ever been captured, so this pins the best-effort wording taken
+// from the client bundle's enum, not from the wire.
+func TestRosterKickWordings(t *testing.T) {
+	for _, tc := range []struct {
+		typ  int
+		want string
+	}{
+		{movedTimeout, "kicked | RitzeTest timed out"},
+		{movedKickChannel, "kicked | RitzeTest was kicked from the channel"},
+		{movedKickServer, "kicked | RitzeTest was kicked from the server"},
+		{movedBanFromServer, "kicked | RitzeTest was banned from the server"},
+	} {
+		r := run5Roster(t)
+		// Put 33 in our channel first, then throw it out.
+		r.apply(moved(33, "24", "23", movedMove, nil))
+		got := r.apply(moved(33, "23", "37", tc.typ, nil))
+		wantNotices(t, got, []string{tc.want})
+	}
+}
+
+// TestRosterKickReasonGoesInTheBody: no reason field has ever been observed, so
+// it is used only when it is actually there.
+func TestRosterKickReasonGoesInTheBody(t *testing.T) {
+	r := run5Roster(t)
+	r.apply(moved(33, "24", "23", movedMove, nil))
+	got := r.apply(moved(33, "23", "37", movedKickChannel, map[string]any{"reason": "spam"}))
+	wantNotices(t, got, []string{"kicked | RitzeTest was kicked from the channel | spam"})
+}
+
+// TestRosterDisconnectFromServer: newChannelId "0" is not a channel, it means
+// the client left the server. Plain leaves say so; a timeout, server kick or
+// ban keeps its own wording.
+func TestRosterDisconnectFromServer(t *testing.T) {
+	for _, tc := range []struct {
+		typ  int
+		want string
+	}{
+		{movedMove, "leave | RitzeTest disconnected"},
+		{movedTimeout, "kicked | RitzeTest timed out"},
+		{movedKickServer, "kicked | RitzeTest was kicked from the server"},
+		{movedBanFromServer, "kicked | RitzeTest was banned from the server"},
+	} {
+		r := run5Roster(t)
+		r.apply(moved(33, "24", "23", movedMove, nil))
+		got := r.apply(moved(33, "23", "0", tc.typ, nil))
+		wantNotices(t, got, []string{tc.want})
+
+		// Membership is gone: a later property update for that client must not
+		// be read as "someone in my channel muted".
+		rc := r.conns[4]
+		if _, ok := rc.chans[33]; ok {
+			t.Errorf("type %d: client 33 still has a channel after disconnecting", tc.typ)
+		}
+		if _, ok := rc.mute[33]; ok {
+			t.Errorf("type %d: client 33 still has mute state after disconnecting", tc.typ)
+		}
+	}
+}
+
+// TestRosterNewClientWithProperties: a client that was never seen arrives with
+// an inline properties block (the "full form" of clientMoved, which run 5 never
+// produced). Its nickname must come from there, so it cannot read as
+// "Client 99 joined", and it must announce itself even when the move type is
+// Subscription, which is silent for everyone else.
+func TestRosterNewClientWithProperties(t *testing.T) {
+	props := map[string]any{
+		"nickname":    "Newcomer",
+		"inputMuted":  true,
+		"outputMuted": false,
+	}
+	for _, typ := range []int{movedSubscription, movedMove} {
+		r := run5Roster(t)
+		got := r.apply(moved(99, "0", "23", typ, map[string]any{"properties": props}))
+		wantNotices(t, got, []string{"join | Newcomer joined your channel"})
+
+		// The mute baseline came with it, so the very next property update is
+		// a real diff and not a silently swallowed first sighting.
+		b, _ := json.Marshal(map[string]any{
+			"type": "clientPropertiesUpdated",
+			"payload": map[string]any{
+				"clientId": 99, "connectionId": 4,
+				"properties": map[string]any{"nickname": "Newcomer", "inputMuted": false, "outputMuted": false},
+			},
+		})
+		wantNotices(t, r.apply(b), []string{"mute | Newcomer unmuted their microphone"})
+	}
+}
+
+// TestRosterKnownClientWithProperties: the same full form for a client we
+// already know is an ordinary move that also refreshes the nickname.
+func TestRosterKnownClientWithProperties(t *testing.T) {
+	r := run5Roster(t)
+	got := r.apply(moved(33, "24", "23", movedMove, map[string]any{
+		"properties": map[string]any{"nickname": "Renamed", "inputMuted": false, "outputMuted": false},
+	}))
+	wantNotices(t, got, []string{"join | Renamed joined your channel"})
+}
+
+// TestRosterSameChannelMoveIsSilent: old == new is a no-op, not a join.
+func TestRosterSameChannelMoveIsSilent(t *testing.T) {
+	r := run5Roster(t)
+	r.apply(moved(33, "24", "23", movedMove, nil))
+	if got := r.apply(moved(33, "23", "23", movedMove, nil)); len(got) != 0 {
+		t.Errorf("same-channel move produced %v, want nothing", lines(got))
+	}
+}
+
+// TestRosterOwnMoveIsSilent: when we move, membership is still tracked per
+// clientId, so the one event must produce nothing at all — no mass leave, no
+// mass join — while still updating which channel is "ours".
+func TestRosterOwnMoveIsSilent(t *testing.T) {
+	r := run5Roster(t)
+	if got := r.apply(moved(30, "23", "37", movedMove, nil)); len(got) != 0 {
+		t.Fatalf("our own move produced %v, want nothing", lines(got))
+	}
+	if ch := r.conns[4].channel; ch != "37" {
+		t.Fatalf("our channel = %q after moving, want 37", ch)
+	}
+	// Our new channel is now the one that matters: 33 is in 24, so its move to
+	// 37 is a join and its move back to 23 is silent.
+	wantNotices(t, r.apply(moved(33, "24", "37", movedMove, nil)),
+		[]string{"join | RitzeTest joined your channel"})
+	wantNotices(t, r.apply(moved(33, "37", "23", movedMove, nil)),
+		[]string{"leave | RitzeTest left your channel"})
+}
+
+// TestRosterConnLost: status 0 with a non-zero error is a drop worth telling
+// the user about; status 0 with error 0 is the user pressing Disconnect.
+func TestRosterConnLost(t *testing.T) {
+	r := run5Roster(t)
+	wantNotices(t, r.apply(status(4, StatusDisconnected, 5, nil)),
+		[]string{"connLost | Lost connection to Example Server A"})
+
+	r2 := run5Roster(t)
+	if got := r2.apply(status(4, StatusDisconnected, 0, nil)); len(got) != 0 {
+		t.Errorf("clean disconnect produced %v, want nothing", lines(got))
+	}
+}
+
+// TestRosterConnLostUsesTheLatestServerName: for a connection that was not in
+// the snapshot the name arrives with connectStatusChanged status 2.
+func TestRosterConnLostUsesTheLatestServerName(t *testing.T) {
+	var r roster
+	r.apply(status(7, StatusConnected, 0, map[string]any{"clientId": 5, "serverName": "Other <Server>"}))
+	wantNotices(t, r.apply(status(7, StatusDisconnected, 3, nil)),
+		[]string{"connLost | Lost connection to Other <Server>"})
+}
+
+// TestRosterEscapesUserText: a freedesktop notification body may be
+// interpreted as markup, so user text in it is escaped; the summary/title is
+// plain text, so user text in it stays literal.
+func TestRosterEscapesUserText(t *testing.T) {
+	r := run5Roster(t)
+	b, _ := json.Marshal(map[string]any{
+		"type": "textMessage",
+		"payload": map[string]any{
+			"connectionId": 4,
+			"invoker":      map[string]any{"id": 33, "nickname": "Tom's <b>Bold</b>"},
+			"message":      "<i>hi</i> & bye",
+			"targetId":     30,
+			"targetMode":   targetPrivate,
+		},
+	})
+	wantNotices(t, r.apply(b),
+		[]string{"privateMsg | Message from Tom's <b>Bold</b> | &lt;i&gt;hi&lt;/i&gt; &amp; bye"})
+
+	// A nickname from clientMoved also lands in a title: still literal.
+	wantNotices(t, r.apply(moved(33, "24", "23", movedMove, nil)),
+		[]string{"join | Tom's <b>Bold</b> joined your channel"})
+}
+
+// TestRosterCapsLongBodies: a 10 000-character message must not become a
+// 10 000-character notification.
+func TestRosterCapsLongBodies(t *testing.T) {
+	long := make([]rune, 10000)
+	for i := range long {
+		long[i] = 'x'
+	}
+	r := run5Roster(t)
+	b, _ := json.Marshal(map[string]any{
+		"type": "textMessage",
+		"payload": map[string]any{
+			"connectionId": 4,
+			"invoker":      map[string]any{"id": 33, "nickname": "RitzeTest"},
+			"message":      string(long),
+			"targetId":     30,
+			"targetMode":   targetPrivate,
+		},
+	})
+	got := r.apply(b)
+	if len(got) != 1 {
+		t.Fatalf("got %v, want one notice", lines(got))
+	}
+	if n := len([]rune(got[0].body)); n != noticeMaxBody+1 { // +1 for the ellipsis
+		t.Errorf("body is %d runes, want %d", n, noticeMaxBody+1)
+	}
+}
+
+// TestRosterOwnMessageIsNotNotified: our own client id as the invoker means the
+// message came from us.
+func TestRosterOwnMessageIsNotNotified(t *testing.T) {
+	r := run5Roster(t)
+	b, _ := json.Marshal(map[string]any{
+		"type": "textMessage",
+		"payload": map[string]any{
+			"connectionId": 4,
+			"invoker":      map[string]any{"id": 30, "nickname": "Ritze"},
+			"message":      "hi",
+			"targetId":     0,
+			"targetMode":   targetChannel,
+		},
+	})
+	if got := r.apply(b); len(got) != 0 {
+		t.Errorf("our own channel message produced %v, want nothing", lines(got))
+	}
+}
+
+// TestRosterServerSuffixWhenMultipleConnections: with more than one server
+// connected the title has to say which one it is about.
+func TestRosterServerSuffixWhenMultipleConnections(t *testing.T) {
+	r := run5Roster(t)
+	wantNotices(t, r.apply(moved(33, "24", "23", movedMove, nil)),
+		[]string{"join | RitzeTest joined your channel"})
+
+	// A second server appears; from now on every title is qualified.
+	r.apply(status(9, StatusConnected, 0, map[string]any{"clientId": 2, "serverName": "Second"}))
+	wantNotices(t, r.apply(moved(33, "23", "37", movedMove, nil)),
+		[]string{"leave | RitzeTest left your channel — Example Server A"})
+}
+
+// TestRosterGarbageIsIgnored: a malformed or unknown message must not panic.
+func TestRosterGarbageIsIgnored(t *testing.T) {
+	r := run5Roster(t)
+	for _, s := range []string{"", "{", "null", `{"type":"clientMoved"}`, `{"type":"nope","payload":{}}`,
+		`{"type":"textMessage","payload":{"connectionId":4}}`} {
+		if got := r.apply([]byte(s)); len(got) != 0 {
+			t.Errorf("%q produced %v, want nothing", s, lines(got))
+		}
+	}
+}
+
+// TestNoticeKindsAllHaveASwitch: every kind the roster can emit must be
+// reachable from a menu item, otherwise it would be silently undisplayable.
+func TestNoticeKindsAllHaveASwitch(t *testing.T) {
+	for k := noticeJoin; k <= noticeConnLost; k++ {
+		if _, ok := trayNotifyKindGroup[k]; !ok {
+			t.Errorf("noticeKind %v has no Settings -> Notifications switch", k)
+		}
+		if k.String() == "unknown" {
+			t.Errorf("noticeKind %d has no name", int(k))
+		}
+	}
+}
+
+// --- batching -------------------------------------------------------------
+
+// TestFlattenNotices covers the flush format: a single notice passes through,
+// several become a counted title and one escaped line each, a shared server
+// suffix is hoisted into the title, and a long batch is cut off.
+func TestFlattenNotices(t *testing.T) {
+	tests := []struct {
+		name  string
+		in    []notice
+		title string
+		body  string
+	}{
+		{
+			name:  "one passes through",
+			in:    []notice{{title: "Mo & co joined your channel", body: "hi &amp; bye"}},
+			title: "Mo & co joined your channel",
+			body:  "hi &amp; bye",
+		},
+		{
+			name: "several, titles escaped for the markup body",
+			in: []notice{
+				{title: "<b> joined your channel"},
+				{title: "Mo moved <b> out of your channel", body: "afk"},
+			},
+			title: "2 TeamSpeak events",
+			body:  "&lt;b&gt; joined your channel\nMo moved &lt;b&gt; out of your channel: afk",
+		},
+		{
+			name: "a shared server suffix moves into the title",
+			in: []notice{
+				{title: "A joined your channel — Home"},
+				{title: "B joined your channel — Home"},
+			},
+			title: "2 TeamSpeak events — Home",
+			body:  "A joined your channel — Home\nB joined your channel — Home",
+		},
+		{
+			name: "mixed servers leave the title plain",
+			in: []notice{
+				{title: "A joined your channel — Home"},
+				{title: "B joined your channel — Work"},
+			},
+			title: "2 TeamSpeak events",
+			body:  "A joined your channel — Home\nB joined your channel — Work",
+		},
+		{
+			name: "no suffix at all leaves the title plain",
+			in: []notice{
+				{title: "A joined your channel"},
+				{title: "B joined your channel"},
+			},
+			title: "2 TeamSpeak events",
+			body:  "A joined your channel\nB joined your channel",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			title, body := flattenNotices(tc.in)
+			if title != tc.title {
+				t.Errorf("title = %q, want %q", title, tc.title)
+			}
+			if body != tc.body {
+				t.Errorf("body =\n%q\nwant\n%q", body, tc.body)
+			}
+		})
+	}
+}
+
+// TestFlattenNoticesCap: past ten lines the rest is summarised.
+func TestFlattenNoticesCap(t *testing.T) {
+	var ns []notice
+	for i := 0; i < 14; i++ {
+		ns = append(ns, notice{title: "line " + strconv.Itoa(i)})
+	}
+	title, body := flattenNotices(ns)
+	if title != "14 TeamSpeak events" {
+		t.Errorf("title = %q", title)
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) != noticeBatchLines+1 {
+		t.Fatalf("body has %d lines, want %d:\n%s", len(lines), noticeBatchLines+1, body)
+	}
+	if lines[0] != "line 0" || lines[9] != "line 9" {
+		t.Errorf("first ten lines = %q", lines[:10])
+	}
+	if lines[10] != "…and 4 more" {
+		t.Errorf("last line = %q, want %q", lines[10], "…and 4 more")
+	}
+}
+
+// TestNoticeBatcherFlush: flush() empties the queue at once and a flushed
+// batcher does not fire again afterwards.
+func TestNoticeBatcherFlush(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+	b := &noticeBatcher{window: time.Hour, cap: time.Hour, send: func(title, _ string) {
+		mu.Lock()
+		defer mu.Unlock()
+		sent = append(sent, title)
+	}}
+	b.add(notice{title: "A"})
+	b.add(notice{title: "B"})
+	b.flush()
+	b.flush() // nothing pending: must not send an empty notification
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sent) != 1 || sent[0] != "2 TeamSpeak events" {
+		t.Errorf("sent = %q, want one batch", sent)
+	}
+}
