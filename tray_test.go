@@ -8,9 +8,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"image"
-	"image/color"
-	_ "image/png"
+	"encoding/xml"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1066,35 +1065,36 @@ func TestTrayIconFile(t *testing.T) {
 	}
 }
 
-// --- the per-state notification icons --------------------------------------
+// --- the notification icons ------------------------------------------------
 
-// TestTrayStateIconFiles: the three PNGs land in XDG_CACHE_HOME, decode as
-// PNGs of the expected size, and an unchanged file is left alone rather than
-// rewritten — the same contract trayIconFile has.
-func TestTrayStateIconFiles(t *testing.T) {
+// TestTrayNotifyIconFiles: the artwork lands in XDG_CACHE_HOME/ts6tray/notify,
+// byte-identical to what is embedded, and an unchanged file is left alone
+// rather than rewritten — the same contract trayIconFile has.
+func TestTrayNotifyIconFiles(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
 
-	icons, err := trayStateIconFiles()
+	icons, err := trayNotifyIconFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[Icon]string{
-		IconMicMuted:     filepath.Join(cache, "ts6tray", "state-mic-muted.png"),
-		IconSpeakerMuted: filepath.Join(cache, "ts6tray", "state-speaker-muted.png"),
-		IconQuiet:        filepath.Join(cache, "ts6tray", "state-quiet.png"),
+	dir := filepath.Join(cache, "ts6tray", "notify")
+	want := map[notifyIcon]string{
+		iconMicMuted:     filepath.Join(dir, "mic-muted.svg"),
+		iconSpeakerMuted: filepath.Join(dir, "speaker-muted.svg"),
+		iconUnmuted:      filepath.Join(dir, "unmuted.svg"),
+		iconJoin:         filepath.Join(dir, "join.svg"),
+		iconLeave:        filepath.Join(dir, "leave.svg"),
 	}
 	if !reflect.DeepEqual(icons, want) {
 		t.Fatalf("paths = %v, want %v", icons, want)
 	}
-	// No icon is rendered for a state a mute notice can never report.
-	for _, ic := range []Icon{IconNone, IconTalking, IconMicDisabled} {
-		if p, ok := icons[ic]; ok {
-			t.Errorf("%v has a state icon at %q, want none", ic, p)
-		}
+	// The app icon is the sentinel for "our own icon" and has no file here.
+	if p, ok := icons[iconApp]; ok {
+		t.Errorf("iconApp has a notification icon at %q, want none", p)
 	}
 
-	mods := map[Icon]time.Time{}
+	mods := map[notifyIcon]time.Time{}
 	for ic, p := range icons {
 		fi, serr := os.Stat(p)
 		if serr != nil {
@@ -1104,16 +1104,22 @@ func TestTrayStateIconFiles(t *testing.T) {
 		if fi.Mode().Perm() != 0o644 {
 			t.Errorf("%v: mode %v, want 0644", ic, fi.Mode().Perm())
 		}
-		img := decodePNG(t, p)
-		if b := img.Bounds(); b.Dx() != trayStateIconSize || b.Dy() != trayStateIconSize {
-			t.Errorf("%v: %dx%d, want %dx%d", ic, b.Dx(), b.Dy(),
-				trayStateIconSize, trayStateIconSize)
+		on, rerr := os.ReadFile(p)
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		embedded, eerr := trayNotifySVGs.ReadFile("assets/notify/" + string(ic) + ".svg")
+		if eerr != nil {
+			t.Fatal(eerr)
+		}
+		if !bytes.Equal(on, embedded) {
+			t.Errorf("%v: the written file is not the embedded artwork", ic)
 		}
 	}
 
 	// Written once: a second call must not touch the files.
 	time.Sleep(10 * time.Millisecond)
-	again, err := trayStateIconFiles()
+	again, err := trayNotifyIconFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1129,96 +1135,58 @@ func TestTrayStateIconFiles(t *testing.T) {
 			t.Errorf("%v was rewritten although its content is unchanged", ic)
 		}
 	}
+
+	// Stale content: rewritten.
+	stale := icons[iconJoin]
+	if werr := os.WriteFile(stale, []byte("<svg/>"), 0o644); werr != nil {
+		t.Fatal(werr)
+	}
+	if _, err = trayNotifyIconFiles(); err != nil {
+		t.Fatal(err)
+	}
+	embedded, _ := trayNotifySVGs.ReadFile("assets/notify/join.svg")
+	if b, _ := os.ReadFile(stale); !bytes.Equal(b, embedded) {
+		t.Error("a stale notification icon was not replaced")
+	}
 }
 
-// decodePNG reads a PNG file, failing the test if it is not one.
-func decodePNG(t *testing.T, path string) image.Image {
-	t.Helper()
-	f, err := os.Open(path)
+// TestTrayNotifySVGsParse: every embedded icon is well-formed XML and a picture
+// of its own, and assets/notify/ holds nothing trayNotifyIconNames does not
+// name — a file added there without a notifyIcon would never be unpacked.
+func TestTrayNotifySVGsParse(t *testing.T) {
+	entries, err := trayNotifySVGs.ReadDir("assets/notify")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-	img, format, err := image.Decode(f)
-	if err != nil {
-		t.Fatalf("decoding %s: %v", path, err)
-	}
-	if format != "png" {
-		t.Fatalf("%s decoded as %q, want png", path, format)
-	}
-	return img
-}
-
-// TestTrayStateIconColours: the rendered PNGs are the tray's own artwork and
-// not, say, an ARGB-vs-RGBA byte shuffle away from it. The quiet ring has to
-// carry the reference blue #0353f4, and both muted glyphs opaque white.
-func TestTrayStateIconColours(t *testing.T) {
-	cache := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cache)
-	icons, err := trayStateIconFiles()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// near reports whether a colour is within tol of want on every channel; the
-	// canvas antialiases, so an exact hit is only sure away from the edges.
-	near := func(r, g, b uint32, want color.RGBA, tol int) bool {
-		d := func(a uint32, w byte) int {
-			v := int(a>>8) - int(w)
-			if v < 0 {
-				return -v
-			}
-			return v
+	if len(entries) != len(trayNotifyIconNames) {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
 		}
-		return d(r, want.R) <= tol && d(g, want.G) <= tol && d(b, want.B) <= tol
+		t.Errorf("assets/notify holds %v, but only %v are mapped to an icon",
+			names, trayNotifyIconNames)
 	}
-
-	for _, tc := range []struct {
-		ic   Icon
-		want color.RGBA
-		name string
-	}{
-		{IconQuiet, trayBlue, "the ring blue #0353f4"},
-		{IconMicMuted, trayWhite, "white"},
-		{IconSpeakerMuted, trayWhite, "white"},
-	} {
-		img := decodePNG(t, icons[tc.ic])
-		bounds := img.Bounds()
-		hits, opaque := 0, 0
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				r, g, b, a := img.At(x, y).RGBA()
-				if a < 0xf000 {
-					continue // antialiased edge or transparent background
-				}
-				opaque++
-				if near(r, g, b, tc.want, 2) {
-					hits++
-				}
+	seen := map[string]notifyIcon{}
+	for _, ic := range trayNotifyIconNames {
+		data, rerr := trayNotifySVGs.ReadFile("assets/notify/" + string(ic) + ".svg")
+		if rerr != nil {
+			t.Fatalf("%v: %v", ic, rerr)
+		}
+		dec := xml.NewDecoder(bytes.NewReader(data))
+		for {
+			_, terr := dec.Token()
+			if terr == io.EOF {
+				break
+			}
+			if terr != nil {
+				t.Errorf("%v: not well-formed XML: %v", ic, terr)
+				break
 			}
 		}
-		if opaque == 0 {
-			t.Errorf("%v: every pixel is transparent", tc.ic)
-			continue
+		if other, dup := seen[string(data)]; dup {
+			t.Errorf("%v and %v are the same picture", ic, other)
 		}
-		if hits < 50 {
-			t.Errorf("%v: only %d of %d opaque pixels are %s — check the ARGB byte order",
-				tc.ic, hits, opaque, tc.name)
-		}
-	}
-
-	// The two muted icons must not be the same picture: the mic and the speaker
-	// say different things.
-	mic, err := trayStatePNG(IconMicMuted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spk, err := trayStatePNG(IconSpeakerMuted)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Equal(mic, spk) {
-		t.Error("the mic and speaker state icons are byte-identical")
+		seen[string(data)] = ic
 	}
 }
 
@@ -1227,21 +1195,23 @@ func TestTrayStateIconColours(t *testing.T) {
 func TestTrayNoticeIconPath(t *testing.T) {
 	tr, got := newNotifyTray(t, 30*time.Millisecond, time.Second)
 	tr.iconPath = "/cache/ts6tray.svg"
-	tr.stateIcons = map[Icon]string{
-		IconMicMuted:     "/cache/state-mic-muted.png",
-		IconSpeakerMuted: "/cache/state-speaker-muted.png",
-		IconQuiet:        "/cache/state-quiet.png",
+	tr.notifyIcons = map[notifyIcon]string{
+		iconMicMuted:     "/cache/notify/mic-muted.svg",
+		iconSpeakerMuted: "/cache/notify/speaker-muted.svg",
+		iconJoin:         "/cache/notify/join.svg",
+		iconLeave:        "/cache/notify/leave.svg",
+		iconUnmuted:      "/cache/notify/unmuted.svg",
 	}
 	tr.notif[trayOptBatch] = false
 	tr.notif[trayNotifyKindGroup[noticeMute]] = true
 
-	tr.onNotice(notice{kind: noticeMute, title: "A muted their microphone", icon: IconMicMuted})
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their microphone", icon: iconMicMuted})
 	tr.onNotice(notice{kind: noticeJoin, title: "B joined your channel"})
 	calls := got()
 	if len(calls) != 2 {
 		t.Fatalf("got %d notifications, want 2: %+v", len(calls), calls)
 	}
-	if calls[0].icon != "/cache/state-mic-muted.png" {
+	if calls[0].icon != "/cache/notify/mic-muted.svg" {
 		t.Errorf("mute notice icon = %q, want the mic PNG", calls[0].icon)
 	}
 	if calls[1].icon != "/cache/ts6tray.svg" {
@@ -1250,12 +1220,12 @@ func TestTrayNoticeIconPath(t *testing.T) {
 
 	// A batch: the newest notice is line 1 and supplies the picture.
 	tr.notif[trayOptBatch] = true
-	tr.onNotice(notice{kind: noticeMute, title: "A muted their microphone", icon: IconMicMuted})
-	tr.onNotice(notice{kind: noticeMute, title: "A muted their speakers", icon: IconSpeakerMuted})
-	tr.onNotice(notice{kind: noticeMute, title: "A unmuted everything", icon: IconQuiet})
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their microphone", icon: iconMicMuted})
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their speakers", icon: iconSpeakerMuted})
+	tr.onNotice(notice{kind: noticeMute, title: "A unmuted everything", icon: iconUnmuted})
 	calls = waitCalls(t, got, 3)
 	last := calls[len(calls)-1]
-	if last.icon != "/cache/state-quiet.png" {
+	if last.icon != "/cache/notify/unmuted.svg" {
 		t.Errorf("batch icon = %q, want the newest notice's quiet PNG", last.icon)
 	}
 	if !strings.HasPrefix(last.body, "1. A unmuted everything") {
@@ -1264,10 +1234,10 @@ func TestTrayNoticeIconPath(t *testing.T) {
 
 	// An icon we never rendered falls back to the app icon rather than "".
 	tr.mu.Lock()
-	tr.stateIcons = nil
+	tr.notifyIcons = nil
 	tr.mu.Unlock()
 	tr.notif[trayOptBatch] = false
-	tr.onNotice(notice{kind: noticeMute, title: "A muted their speakers", icon: IconSpeakerMuted})
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their speakers", icon: iconSpeakerMuted})
 	calls = got()
 	if c := calls[len(calls)-1]; c.icon != "/cache/ts6tray.svg" {
 		t.Errorf("unrendered state icon = %q, want the app icon", c.icon)
@@ -1515,6 +1485,35 @@ func TestTrayQuietWhenDeaf(t *testing.T) {
 	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
 	if c := got(); len(c) != 2 || c[1].title != "A joined your channel" {
 		t.Errorf("after unmuting: %v", c)
+	}
+}
+
+// TestTrayQuietWhenDeafPassesOurOwnActions: silencing the world while our
+// speakers are muted must not silence *us*. Muting the speakers is itself a
+// "self" notice, and the moment the user flips that switch is exactly when the
+// confirmation is wanted — so every self notice gets through, while other
+// people's news stays held back.
+func TestTrayQuietWhenDeafPassesOurOwnActions(t *testing.T) {
+	var deaf atomic.Bool
+	tr, got := deafTray(t, &deaf)
+	tr.notif[trayOptQuietWhenDeaf] = true
+	tr.notif[trayNotifyKindGroup[noticeSelf]] = true
+	tr.notif[trayNotifyKindGroup[noticeMute]] = true
+
+	deaf.Store(true)
+	tr.onNotice(notice{kind: noticeSelf, title: "You muted your speakers", icon: iconSpeakerMuted})
+	tr.onNotice(notice{kind: noticeSelf, title: "You were kicked from the channel", icon: iconLeave})
+	c := got()
+	if len(c) != 2 || c[0].title != "You muted your speakers" ||
+		c[1].title != "You were kicked from the channel" {
+		t.Fatalf("our own notices were silenced: %v", c)
+	}
+
+	// Everybody else is still held back.
+	tr.onNotice(notice{kind: noticeMute, title: "A muted their speakers", icon: iconSpeakerMuted})
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel", icon: iconJoin})
+	if c := got(); len(c) != 2 {
+		t.Errorf("someone else's notice got through while deaf: %v", c[2:])
 	}
 }
 

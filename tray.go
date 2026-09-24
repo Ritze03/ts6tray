@@ -19,17 +19,14 @@ package main
 import (
 	"bytes"
 	"context"
-	_ "embed"
+	"embed"
 	"errors"
 	"fmt"
-	"image"
 	"image/color"
-	"image/png"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -90,80 +87,53 @@ func trayIconFile() (string, error) {
 	return path, nil
 }
 
-// --- the per-state notification icons --------------------------------------
+// --- the notification icons ------------------------------------------------
 
-// The three states a mute notification can report, and the file each one is
-// cached under. They are PNGs and not the app SVG because a notification server
-// is only required to handle a path; PNG is the one raster format every one of
-// them reads, and rendering our own artwork keeps the notification and the tray
-// telling the same story with the same picture.
-var trayStateIconNames = map[Icon]string{
-	IconMicMuted:     "state-mic-muted.png",
-	IconSpeakerMuted: "state-speaker-muted.png",
-	IconQuiet:        "state-quiet.png",
-}
-
-// trayStateIconSize is the edge of the rendered PNG. A notification server
-// scales down far better than up, and 64 px is the largest size any of them
-// asks for in practice.
-const trayStateIconSize = 64
-
-// trayStatePNG renders one state with the tray's own painter and encodes it.
+// trayNotifySVGs is the notification artwork: one flat SVG per notifyIcon,
+// each built on the app icon's blue ring and navy disc so a notification is
+// recognisably ours. They are SVGs and not rendered PNGs because a notification
+// server scales the file it is handed, and a raster at one size looks soft at
+// every other one.
 //
-// trayCanvas.pixmap hands back SNI's ARGB32: big-endian, so byte order A, R, G,
-// B, with straight (un-premultiplied) alpha. image.NRGBA is R, G, B, A, also
-// straight — so this is purely a reshuffle of the four bytes, no alpha maths.
-// Getting it wrong is silent: the blue ring comes out orange.
-func trayStatePNG(ic Icon) ([]byte, error) {
-	p := trayDraw(trayStateIconSize*trayOversample, ic).pixmap(trayStateIconSize)
-	img := image.NewNRGBA(image.Rect(0, 0, int(p.Width), int(p.Height)))
-	for i := 0; i+3 < len(p.Data); i += 4 {
-		a, r, g, b := p.Data[i], p.Data[i+1], p.Data[i+2], p.Data[i+3]
-		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = r, g, b, a
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+//go:embed assets/notify/*.svg
+var trayNotifySVGs embed.FS
+
+// trayNotifyIconNames is every icon that has a file, in a fixed order so the
+// error a caller sees does not depend on map iteration.
+var trayNotifyIconNames = []notifyIcon{
+	iconMicMuted, iconSpeakerMuted, iconUnmuted, iconJoin, iconLeave,
 }
 
-// trayStateIconFiles renders the three state icons into
-// $XDG_CACHE_HOME/ts6tray/ and returns Icon -> path. Like trayIconFile it
-// rewrites a file only when the bytes differ, so a restart does not churn the
-// cache directory and a server watching those paths sees nothing move.
-func trayStateIconFiles() (map[Icon]string, error) {
+// trayNotifyIconFiles unpacks the artwork into $XDG_CACHE_HOME/ts6tray/notify/
+// and returns notifyIcon -> path. Like trayIconFile it rewrites a file only
+// when the bytes differ, so a restart does not churn the cache directory and a
+// server watching those paths sees nothing move.
+func trayNotifyIconFiles() (map[notifyIcon]string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(base, "ts6tray")
-	out := make(map[Icon]string, len(trayStateIconNames))
+	dir := filepath.Join(base, "ts6tray", "notify")
+	out := make(map[notifyIcon]string, len(trayNotifyIconNames))
 	made := false
-	// Sorted, so the error a caller sees does not depend on map order.
-	icons := make([]Icon, 0, len(trayStateIconNames))
-	for ic := range trayStateIconNames {
-		icons = append(icons, ic)
-	}
-	sort.Slice(icons, func(i, j int) bool { return icons[i] < icons[j] })
-	for _, ic := range icons {
-		path := filepath.Join(dir, trayStateIconNames[ic])
-		data, perr := trayStatePNG(ic)
-		if perr != nil {
-			return out, perr
+	for _, ic := range trayNotifyIconNames {
+		data, rerr := trayNotifySVGs.ReadFile("assets/notify/" + string(ic) + ".svg")
+		if rerr != nil {
+			return out, rerr
 		}
-		if old, rerr := os.ReadFile(path); rerr == nil && bytes.Equal(old, data) {
+		path := filepath.Join(dir, string(ic)+".svg")
+		if old, oerr := os.ReadFile(path); oerr == nil && bytes.Equal(old, data) {
 			out[ic] = path
 			continue
 		}
 		if !made {
-			if err := os.MkdirAll(dir, 0o700); err != nil {
-				return out, err
+			if merr := os.MkdirAll(dir, 0o700); merr != nil {
+				return out, merr
 			}
 			made = true
 		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			return out, err
+		if werr := os.WriteFile(path, data, 0o644); werr != nil {
+			return out, werr
 		}
 		out[ic] = path
 	}
@@ -691,12 +661,12 @@ type tray struct {
 	exported        bool
 	lastNotify      time.Time
 	warnedNoWatcher bool
-	iconPath        string          // cached app icon, "" when it could not be written
-	stateIcons      map[Icon]string // rendered per-state notification PNGs, by Icon
-	lastEventID     uint32          // id of the last event notification, for replaces_id
-	click           string          // left-click target: "mic" or "speaker"
-	notif           map[string]bool // Settings -> Notifications switches, by group key
-	binding         string          // "" or the target whose bind countdown is running
+	iconPath        string                // cached app icon, "" when it could not be written
+	notifyIcons     map[notifyIcon]string // unpacked notification SVGs, by icon
+	lastEventID     uint32                // id of the last event notification, for replaces_id
+	click           string                // left-click target: "mic" or "speaker"
+	notif           map[string]bool       // Settings -> Notifications switches, by group key
+	binding         string                // "" or the target whose bind countdown is running
 
 	props *prop.Properties
 }
@@ -846,6 +816,13 @@ func (t *tray) quietNow() bool {
 	return false
 }
 
+// noticeIgnoresQuiet reports whether a kind is shown even while "Silence while
+// my speakers are muted" is holding everything else back: the lost connection,
+// and our own actions.
+func noticeIgnoresQuiet(k noticeKind) bool {
+	return k == noticeConnLost || k == noticeSelf
+}
+
 // reloadConfig re-reads the config file and republishes the menu, so the
 // checkmarks follow a change made by `ts6tray settings` in another process.
 // It is what the IPC "reload" request calls.
@@ -898,10 +875,13 @@ func (t *tray) onNotice(n notice) {
 		return
 	}
 	// "Silence while my speakers are muted": dropped outright rather than
-	// queued, so unmuting does not then flush a pile of stale news. Losing the
-	// connection is the one thing that still gets through — the whole point of
-	// that notice is that nothing else will be arriving.
-	if n.kind != noticeConnLost && t.quietNow() {
+	// queued, so unmuting does not then flush a pile of stale news. Two kinds
+	// still get through. Losing the connection, because the whole point of that
+	// notice is that nothing else will be arriving; and anything about
+	// ourselves, because muting the speakers silences *other people's* news, not
+	// the confirmation of what we just did — which is exactly the moment we
+	// mute them.
+	if !noticeIgnoresQuiet(n.kind) && t.quietNow() {
 		return
 	}
 	if t.batch != nil && t.notifyOptOn(trayOptBatch) {
@@ -1019,14 +999,15 @@ func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) erro
 	} else {
 		t.iconPath = path
 	}
-	// The mute notifications want the mentioned user's state as their picture,
-	// so the three states are rendered once here. A failure is not fatal: every
-	// notification simply keeps the app icon.
-	icons, ierr := trayStateIconFiles()
+	// A notification wants a picture of what happened — the mentioned user's
+	// resulting mute state, or an arrival or a departure — so the artwork is
+	// unpacked once here. A failure is not fatal: every notification simply
+	// keeps the app icon.
+	icons, ierr := trayNotifyIconFiles()
 	if ierr != nil {
-		log.Printf("tray: writing the state icons: %v", ierr)
+		log.Printf("tray: writing the notification icons: %v", ierr)
 	}
-	t.stateIcons = icons // whatever got written before the error still counts
+	t.notifyIcons = icons // whatever got written before the error still counts
 	t.batch = &noticeBatcher{
 		window: noticeBatchWindow,
 		cap:    noticeBatchCap,
@@ -1507,15 +1488,15 @@ func (t *tray) notifyNotBound(err error) {
 // "key not bound" warning. Those never replace anything, because they are
 // answers to something the user just clicked. It is not rate-limited; only
 // notifyNotBound is, because that one can fire on every stray click.
-func (t *tray) notify(title, body string) { t.sendNotify(0, title, body, t.iconFor(IconNone)) }
+func (t *tray) notify(title, body string) { t.sendNotify(0, title, body, t.iconFor(iconApp)) }
 
-// iconFor resolves a notice's icon to a file path: the rendered state PNG when
-// the notice names one and it was written, otherwise our own app icon. "" means
-// neither exists, and sendNotify falls back to a theme name.
-func (t *tray) iconFor(ic Icon) string {
+// iconFor resolves a notice's icon to a file path: the unpacked notification
+// SVG when the notice names one and it was written, otherwise our own app icon.
+// "" means neither exists, and sendNotify falls back to a theme name.
+func (t *tray) iconFor(ic notifyIcon) string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	if p := t.stateIcons[ic]; p != "" {
+	if p := t.notifyIcons[ic]; p != "" {
 		return p
 	}
 	return t.iconPath
@@ -1524,8 +1505,8 @@ func (t *tray) iconFor(ic Icon) string {
 // sendNotify performs the Notify call and returns the id the server assigned.
 // replaces is the id of the notification to take the place of, or 0 for a new
 // one. Replacing is part of the freedesktop spec, so every server honours it.
-// icon is the path the server should draw: a per-state PNG for a mute notice,
-// our app SVG for everything else.
+// icon is the path the server should draw: a notification SVG when the notice
+// has one, our app icon for everything else.
 func (t *tray) sendNotify(replaces uint32, title, body, icon string) uint32 {
 	if t.notifyFn != nil {
 		return t.notifyFn(replaces, title, body, icon)
@@ -1563,7 +1544,7 @@ func (t *tray) sendNotify(replaces uint32, title, body, icon string) uint32 {
 // several. With "Replace previous notification" on it takes the place of the
 // last one, so only the newest ts6tray notification is ever on screen.
 // ic is the notice's state icon, or the batch's newest notice's.
-func (t *tray) notifyEvent(title, body string, ic Icon) {
+func (t *tray) notifyEvent(title, body string, ic notifyIcon) {
 	var replaces uint32
 	t.mu.RLock()
 	if t.notifyOptOnLocked(trayOptReplace) {

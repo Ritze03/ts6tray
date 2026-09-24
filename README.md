@@ -90,7 +90,9 @@ Messages and pokes are off because TeamSpeak already pops up its own notificatio
 mute changes and channel chatter are off because they are noisy. **My own changes** — you
 muting or unmuting your own microphone or speakers, and being moved or kicked by someone
 else — is off because the tray icon already says all of that; turn it on if you would rather
-read it. **Server messages** are server-wide broadcasts.
+read it. **Server messages** are server-wide broadcasts. Someone whose speakers are muted
+muting or unmuting their microphone says nothing — they are out of the conversation either
+way — but their speakers going off and on still does.
 
 Between them these cover everything TeamSpeak itself pops up, so you can have one source of
 notifications instead of two: turn messages, pokes and the rest off in TeamSpeak and on here.
@@ -98,9 +100,11 @@ With more than one server connected the title says which server a notice came fr
 
 Every notification carries ts6tray's own icon, unpacked once to
 `~/.cache/ts6tray/ts6tray.svg` — except a mute notification, which shows the person's *new*
-state as its icon (muted speakers, muted microphone, or the plain ring when they are unmuted
-again), rendered once beside it as `state-*.png`; and a grouped notification, which lists its
-events numbered with the newest first and takes that newest event's icon.
+state (speakers or microphone under a red slash, or the plain microphone when they are
+unmuted again), and an arrival or a departure, which is a green person for someone joining
+and a red one for someone leaving, being kicked or dropping out; those icons are unpacked
+beside it in `~/.cache/ts6tray/notify/`. A grouped notification lists its events numbered
+with the newest first and takes that newest event's icon.
 
 Below the list are the delivery options, saved the same way:
 
@@ -108,7 +112,7 @@ Below the list are the delivery options, saved the same way:
 | --- | --- | --- |
 | Group bursts (0.5 s) | `notify.batch` | Waits half a second, and half a second again after each further event, then sends the whole burst as one notification with a numbered line per event, newest first. Five people moved at once is one notification, not five. It gives up waiting after 3 s. |
 | Replace previous notification | `notify.replace` | Each new notification takes the place of the last one, so only the newest is on screen. |
-| Silence while my speakers are muted | `notify.quietWhenDeaf` | **Off by default.** While your speakers are muted on any connected server, event notifications are dropped rather than held back — you muted them to be left alone, and unmuting should not then deliver the backlog. A lost connection still comes through. |
+| Silence while my speakers are muted | `notify.quietWhenDeaf` | **Off by default.** While your speakers are muted on any connected server, event notifications are dropped rather than held back — you muted them to be left alone, and unmuting should not then deliver the backlog. A lost connection still comes through, and so do your own actions (**My own changes**) — muting the speakers silences other people, not the confirmation of what you just did. |
 
 Kick, ban and timeout wording is best-effort: TeamSpeak has never sent one during a capture,
 so it follows the client's documented event codes rather than an observed message, and a kick

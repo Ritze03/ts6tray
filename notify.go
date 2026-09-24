@@ -83,29 +83,48 @@ func (k noticeKind) String() string {
 // always plain text (escaping it would show "Tom&#39;s" verbatim).
 //
 // icon names the artwork the notification server should show. The zero value,
-// IconNone, is the sentinel for "our own app icon": it is never a state a mute
-// notice can report, because a client that is visible at all is connected. Mute
-// notices set it to the mentioned user's *resulting* state, so the picture on
-// screen says what they are now rather than what our own tray shows.
+// iconApp, is the sentinel for "our own app icon". Mute notices set it to the
+// mentioned user's *resulting* state, so the picture on screen says what they
+// are now rather than what our own tray shows; arrivals and departures get the
+// green and red people.
 type notice struct {
 	kind  noticeKind
 	title string
 	body  string
-	icon  Icon
+	icon  notifyIcon
 }
 
-// noticeIcon maps a client's {inputMuted, outputMuted} onto the tray artwork,
-// with the tray's own precedence: speakers first, because a muted speaker makes
-// a muted mic beside the point, then the mic, then the plain unmuted ring.
-func noticeIcon(m [2]bool) Icon {
+// notifyIcon is the artwork of one notification. It is deliberately not the
+// tray's Icon enum: the tray draws states of *our* connection, while these are
+// pictures of what just happened to someone. The value is the base name of the
+// file in assets/notify/, and the empty string means our own app icon.
+type notifyIcon string
+
+const (
+	iconApp          notifyIcon = ""
+	iconMicMuted     notifyIcon = "mic-muted"
+	iconSpeakerMuted notifyIcon = "speaker-muted"
+	iconUnmuted      notifyIcon = "unmuted"
+	iconJoin         notifyIcon = "join"
+	iconLeave        notifyIcon = "leave"
+)
+
+// noticeIcon maps a client's {inputMuted, outputMuted} onto the artwork, with
+// the tray's own precedence: speakers first, because a muted speaker makes a
+// muted mic beside the point, then the mic, then the plain unmuted mic.
+func noticeIcon(m [2]bool) notifyIcon {
 	switch {
 	case m[1]:
-		return IconSpeakerMuted
+		return iconSpeakerMuted
 	case m[0]:
-		return IconMicMuted
+		return iconMicMuted
 	}
-	return IconQuiet
+	return iconUnmuted
 }
+
+// with returns the notice with its icon set. mk() leaves the icon at iconApp,
+// so every site that has a better picture says so here.
+func (n notice) with(ic notifyIcon) notice { n.icon = ic; return n }
 
 // Caps on user-controlled text before it is composed (and, for bodies,
 // escaped). Truncating
@@ -369,7 +388,7 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 	// properties is an arrival, whatever the move type says (a newly visible
 	// client arrives as a Subscription, which is otherwise silent).
 	if !knew && p.Properties != nil && into {
-		return []notice{r.mk(rc, noticeJoin, who+" joined your channel", "")}
+		return []notice{r.mk(rc, noticeJoin, who+" joined your channel", "").with(iconJoin)}
 	}
 	if int(p.Type) == movedSubscription {
 		return nil // subscription churn is not a join
@@ -379,35 +398,35 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 	if gone {
 		switch int(p.Type) {
 		case movedTimeout:
-			return []notice{r.mk(rc, noticeKicked, who+" timed out", body)}
+			return []notice{r.mk(rc, noticeKicked, who+" timed out", body).with(iconLeave)}
 		case movedKickServer:
-			return []notice{r.mk(rc, noticeKicked, who+" was kicked from the server", body)}
+			return []notice{r.mk(rc, noticeKicked, who+" was kicked from the server", body).with(iconLeave)}
 		case movedBanFromServer:
-			return []notice{r.mk(rc, noticeKicked, who+" was banned from the server", body)}
+			return []notice{r.mk(rc, noticeKicked, who+" was banned from the server", body).with(iconLeave)}
 		}
-		return []notice{r.mk(rc, noticeLeave, who+" disconnected", body)}
+		return []notice{r.mk(rc, noticeLeave, who+" disconnected", body).with(iconLeave)}
 	}
 
 	switch int(p.Type) {
 	case movedMove:
 		if into {
-			return []notice{r.mk(rc, noticeJoin, who+" joined your channel", "")}
+			return []notice{r.mk(rc, noticeJoin, who+" joined your channel", "").with(iconJoin)}
 		}
-		return []notice{r.mk(rc, noticeLeave, who+" left your channel", "")}
+		return []notice{r.mk(rc, noticeLeave, who+" left your channel", "").with(iconLeave)}
 	case movedMoved:
 		by := "Someone"
 		if p.Invoker != nil {
 			by = r.nickOf(rc, int(p.Invoker.ID))
 		}
 		if into {
-			return []notice{r.mk(rc, noticeMoved, by+" moved "+who+" into your channel", body)}
+			return []notice{r.mk(rc, noticeMoved, by+" moved "+who+" into your channel", body).with(iconJoin)}
 		}
-		return []notice{r.mk(rc, noticeMoved, by+" moved "+who+" out of your channel", body)}
+		return []notice{r.mk(rc, noticeMoved, by+" moved "+who+" out of your channel", body).with(iconLeave)}
 	case movedTimeout, movedKickChannel, movedKickServer, movedBanFromServer:
 		if !out {
 			// A kick can land someone *in* our channel (the default channel);
 			// from our side that is simply an arrival.
-			return []notice{r.mk(rc, noticeJoin, who+" joined your channel", "")}
+			return []notice{r.mk(rc, noticeJoin, who+" joined your channel", "").with(iconJoin)}
 		}
 		var line string
 		switch int(p.Type) {
@@ -420,7 +439,7 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 		default:
 			line = who + " was banned from the server"
 		}
-		return []notice{r.mk(rc, noticeKicked, line, body)}
+		return []notice{r.mk(rc, noticeKicked, line, body).with(iconLeave)}
 	}
 	return nil
 }
@@ -461,15 +480,17 @@ func (r *roster) applyProps(raw json.RawMessage) []notice {
 	who := r.nickOf(rc, id)
 	ic := noticeIcon(now)
 	var out []notice
-	if was[0] != now[0] {
-		n := r.mk(rc, noticeMute, who+" "+mutedWord(now[0])+" their microphone", "")
-		n.icon = ic
-		out = append(out, n)
+	// A mic change only matters to us while they can hear us: someone whose
+	// speakers are muted is not in the conversation either way, and TeamSpeak
+	// mutes their mic implicitly in that state, so their mic flapping is
+	// nothing that happened to us. That covers the "muted before and after"
+	// case (was[1] && now[1]) and the two combined changes, where only the
+	// speaker notice — the one that says whether they are back — is shown.
+	if was[0] != now[0] && !now[1] && !was[1] {
+		out = append(out, r.mk(rc, noticeMute, who+" "+mutedWord(now[0])+" their microphone", "").with(ic))
 	}
 	if was[1] != now[1] {
-		n := r.mk(rc, noticeMute, who+" "+mutedWord(now[1])+" their speakers", "")
-		n.icon = ic
-		out = append(out, n)
+		out = append(out, r.mk(rc, noticeMute, who+" "+mutedWord(now[1])+" their speakers", "").with(ic))
 	}
 	return out
 }
@@ -517,14 +538,10 @@ func (r *roster) selfMute(rc *rosterConn, was, now [2]bool) []notice {
 	ic := noticeIcon(now)
 	var out []notice
 	if was[0] != now[0] {
-		n := r.mk(rc, noticeSelf, "You "+mutedWord(now[0])+" your microphone", "")
-		n.icon = ic
-		out = append(out, n)
+		out = append(out, r.mk(rc, noticeSelf, "You "+mutedWord(now[0])+" your microphone", "").with(ic))
 	}
 	if was[1] != now[1] {
-		n := r.mk(rc, noticeSelf, "You "+mutedWord(now[1])+" your speakers", "")
-		n.icon = ic
-		out = append(out, n)
+		out = append(out, r.mk(rc, noticeSelf, "You "+mutedWord(now[1])+" your speakers", "").with(ic))
 	}
 	return out
 }
@@ -545,13 +562,13 @@ func (r *roster) selfMoved(rc *rosterConn, typ int, invoker *rosterInvoker, newC
 		}
 		return []notice{r.mk(rc, noticeSelf, r.nickOf(rc, int(invoker.ID))+" moved you to "+where, body)}
 	case movedTimeout:
-		return []notice{r.mk(rc, noticeSelf, "You timed out", body)}
+		return []notice{r.mk(rc, noticeSelf, "You timed out", body).with(iconLeave)}
 	case movedKickChannel:
-		return []notice{r.mk(rc, noticeSelf, "You were kicked from the channel", body)}
+		return []notice{r.mk(rc, noticeSelf, "You were kicked from the channel", body).with(iconLeave)}
 	case movedKickServer:
-		return []notice{r.mk(rc, noticeSelf, "You were kicked from the server", body)}
+		return []notice{r.mk(rc, noticeSelf, "You were kicked from the server", body).with(iconLeave)}
 	case movedBanFromServer:
-		return []notice{r.mk(rc, noticeSelf, "You were banned from the server", body)}
+		return []notice{r.mk(rc, noticeSelf, "You were banned from the server", body).with(iconLeave)}
 	}
 	return nil
 }
@@ -715,7 +732,7 @@ const (
 type noticeBatcher struct {
 	window time.Duration
 	cap    time.Duration
-	send   func(title, body string, icon Icon)
+	send   func(title, body string, icon notifyIcon)
 
 	mu      sync.Mutex
 	pending []notice
@@ -796,9 +813,9 @@ func (b *noticeBatcher) deliver(ns []notice) {
 //
 // The titles are plain text but the body is markup, so every title has to be
 // escaped on its way into the body. The bodies already are (escapeRunes).
-func flattenNotices(ns []notice) (title, body string, icon Icon) {
+func flattenNotices(ns []notice) (title, body string, icon notifyIcon) {
 	if len(ns) == 0 {
-		return "", "", IconNone
+		return "", "", iconApp
 	}
 	if len(ns) == 1 {
 		return ns[0].title, ns[0].body, ns[0].icon

@@ -564,24 +564,24 @@ func TestFlattenNoticesCap(t *testing.T) {
 // puts on line 1, and a batch of plain notices asks for no state icon at all.
 func TestFlattenNoticesIcon(t *testing.T) {
 	ns := []notice{
-		{kind: noticeMute, title: "A muted their microphone", icon: IconMicMuted},
-		{kind: noticeMute, title: "B muted their speakers", icon: IconSpeakerMuted},
-		{kind: noticeMute, title: "C unmuted their microphone", icon: IconQuiet},
+		{kind: noticeMute, title: "A muted their microphone", icon: iconMicMuted},
+		{kind: noticeMute, title: "B muted their speakers", icon: iconSpeakerMuted},
+		{kind: noticeMute, title: "C unmuted their microphone", icon: iconUnmuted},
 	}
-	if _, body, ic := flattenNotices(ns); ic != IconQuiet {
-		t.Errorf("batch icon = %v, want %v (body: %q)", ic, IconQuiet, body)
+	if _, body, ic := flattenNotices(ns); ic != iconUnmuted {
+		t.Errorf("batch icon = %v, want %v (body: %q)", ic, iconUnmuted, body)
 	}
 	// One notice passes its own icon through.
-	if _, _, ic := flattenNotices(ns[1:2]); ic != IconSpeakerMuted {
-		t.Errorf("single icon = %v, want %v", ic, IconSpeakerMuted)
+	if _, _, ic := flattenNotices(ns[1:2]); ic != iconSpeakerMuted {
+		t.Errorf("single icon = %v, want %v", ic, iconSpeakerMuted)
 	}
 	// Nothing sets an icon: the sentinel, meaning the app icon.
 	plain := []notice{{title: "A joined your channel"}, {title: "B joined your channel"}}
-	if _, _, ic := flattenNotices(plain); ic != IconNone {
-		t.Errorf("plain batch icon = %v, want %v", ic, IconNone)
+	if _, _, ic := flattenNotices(plain); ic != iconApp {
+		t.Errorf("plain batch icon = %v, want %v", ic, iconApp)
 	}
-	if _, _, ic := flattenNotices(nil); ic != IconNone {
-		t.Errorf("empty batch icon = %v, want %v", ic, IconNone)
+	if _, _, ic := flattenNotices(nil); ic != iconApp {
+		t.Errorf("empty batch icon = %v, want %v", ic, iconApp)
 	}
 }
 
@@ -590,12 +590,12 @@ func TestFlattenNoticesIcon(t *testing.T) {
 func TestNoticeIcon(t *testing.T) {
 	tests := []struct {
 		in   [2]bool // {inputMuted, outputMuted}
-		want Icon
+		want notifyIcon
 	}{
-		{[2]bool{false, false}, IconQuiet},
-		{[2]bool{true, false}, IconMicMuted},
-		{[2]bool{false, true}, IconSpeakerMuted},
-		{[2]bool{true, true}, IconSpeakerMuted},
+		{[2]bool{false, false}, iconUnmuted},
+		{[2]bool{true, false}, iconMicMuted},
+		{[2]bool{false, true}, iconSpeakerMuted},
+		{[2]bool{true, true}, iconSpeakerMuted},
 	}
 	for _, tc := range tests {
 		if got := noticeIcon(tc.in); got != tc.want {
@@ -628,16 +628,16 @@ func TestRosterMuteIcons(t *testing.T) {
 		name      string
 		in, out   bool
 		wantTitle []string
-		wantIcon  Icon
+		wantIcon  notifyIcon
 	}{
 		{"mic muted", true, false,
-			[]string{"RitzeTest muted their microphone"}, IconMicMuted},
+			[]string{"RitzeTest muted their microphone"}, iconMicMuted},
 		{"speakers muted", false, true,
-			[]string{"RitzeTest muted their speakers"}, IconSpeakerMuted},
-		{"both muted at once: speakers win",
+			[]string{"RitzeTest muted their speakers"}, iconSpeakerMuted},
+		{"both muted at once: only the speakers are worth saying",
 			true, true,
-			[]string{"RitzeTest muted their microphone", "RitzeTest muted their speakers"},
-			IconSpeakerMuted},
+			[]string{"RitzeTest muted their speakers"},
+			iconSpeakerMuted},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -657,31 +657,73 @@ func TestRosterMuteIcons(t *testing.T) {
 		})
 	}
 
-	// A full unmute from both-muted is the one transition that ends at the
-	// plain ring: from here the icon says "nothing is muted any more".
+	// A full unmute from both-muted ends at the plain unmuted mic: the icon
+	// says "nothing is muted any more". It is one notice, the speakers': the
+	// mic was not worth reporting while they could not hear.
 	r := newRoster()
 	r.apply(props(9, true, true))
 	ns := r.apply(props(9, false, false))
-	if len(ns) != 2 {
-		t.Fatalf("full unmute produced %d notices, want 2: %+v", len(ns), ns)
+	if len(ns) != 1 || ns[0].title != "RitzeTest unmuted their speakers" {
+		t.Fatalf("full unmute produced %+v, want one speaker-unmute notice", ns)
 	}
-	for _, n := range ns {
-		if n.icon != IconQuiet {
-			t.Errorf("%q carries icon %v, want %v", n.title, n.icon, IconQuiet)
-		}
+	if ns[0].icon != iconUnmuted {
+		t.Errorf("%q carries icon %v, want %v", ns[0].title, ns[0].icon, iconUnmuted)
+	}
+}
+
+// TestRosterMuteWhileDeaf: another user's microphone is only news while they
+// can hear us. Someone whose speakers are muted flipping their mic does
+// nothing to us at all — TeamSpeak mutes their mic implicitly in that state —
+// so it says nothing, while their speakers going on and off still do.
+func TestRosterMuteWhileDeaf(t *testing.T) {
+	props := func(in, out bool) []byte {
+		return []byte(fmt.Sprintf(
+			`{"type":"clientPropertiesUpdated","payload":{"connectionId":1,"clientId":9,`+
+				`"properties":{"nickname":"RitzeTest","inputMuted":%t,"outputMuted":%t}}}`,
+			in, out))
+	}
+	newRoster := func() *roster {
+		r := &roster{}
+		r.auth([]byte(`{"connections":[{"id":1,"clientId":7,"properties":{"name":"Home"},
+			"clientInfos":[
+				{"id":7,"channelId":5,"properties":{"nickname":"Me"}},
+				{"id":9,"channelId":5,"properties":{"nickname":"RitzeTest","inputMuted":false,"outputMuted":true}}
+			]}]}`))
+		return r
 	}
 
-	// Unmuting only the mic while the speakers stay muted still shows the
-	// speaker icon: the state, not the change.
-	r = newRoster()
-	r.apply(props(9, true, true))
-	ns = r.apply(props(9, false, true))
-	if len(ns) != 1 || ns[0].title != "RitzeTest unmuted their microphone" {
-		t.Fatalf("got %+v, want one mic-unmute notice", ns)
+	// Speaker-muted throughout: muting and unmuting the mic is silent.
+	r := newRoster()
+	if ns := r.apply(props(true, true)); len(ns) != 0 {
+		t.Errorf("mic muted while deaf produced %v, want nothing", lines(ns))
 	}
-	if ns[0].icon != IconSpeakerMuted {
-		t.Errorf("icon = %v, want %v", ns[0].icon, IconSpeakerMuted)
+	if ns := r.apply(props(false, true)); len(ns) != 0 {
+		t.Errorf("mic unmuted while deaf produced %v, want nothing", lines(ns))
 	}
+
+	// The speakers themselves still speak.
+	ns := r.apply(props(false, false))
+	if len(ns) != 1 || ns[0].title != "RitzeTest unmuted their speakers" {
+		t.Fatalf("got %+v, want one speaker-unmute notice", ns)
+	}
+	if ns[0].icon != iconUnmuted {
+		t.Errorf("icon = %v, want %v", ns[0].icon, iconUnmuted)
+	}
+
+	// Both flags in one update: only the speaker notice, the one that says
+	// whether they are in the conversation.
+	ns = r.apply(props(true, true))
+	if len(ns) != 1 || ns[0].title != "RitzeTest muted their speakers" {
+		t.Fatalf("combined change produced %+v, want only the speaker notice", ns)
+	}
+
+	// Our own mic is unaffected by any of this: we hear ourselves regardless.
+	self := &roster{}
+	self.auth([]byte(`{"connections":[{"id":1,"clientId":7,"properties":{"name":"Home"},
+		"clientInfos":[{"id":7,"channelId":5,"properties":{"nickname":"Me","inputMuted":false,"outputMuted":true}}]}]}`))
+	got := self.apply([]byte(`{"type":"clientPropertiesUpdated","payload":{"connectionId":1,"clientId":7,
+		"properties":{"nickname":"Me","inputMuted":true,"outputMuted":true}}}`))
+	wantNotices(t, got, []string{"self | You muted your microphone"})
 }
 
 // TestNoticeBatcherFlush: flush() empties the queue at once and a flushed
@@ -689,7 +731,7 @@ func TestRosterMuteIcons(t *testing.T) {
 func TestNoticeBatcherFlush(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
-	b := &noticeBatcher{window: time.Hour, cap: time.Hour, send: func(title, _ string, _ Icon) {
+	b := &noticeBatcher{window: time.Hour, cap: time.Hour, send: func(title, _ string, _ notifyIcon) {
 		mu.Lock()
 		defer mu.Unlock()
 		sent = append(sent, title)
@@ -731,14 +773,14 @@ func TestRosterSelfMuteNotices(t *testing.T) {
 
 	got := r.apply(selfPropsMuted(true, false))
 	wantNotices(t, got, []string{"self | You muted your microphone"})
-	if got[0].icon != IconMicMuted {
-		t.Errorf("icon = %v, want IconMicMuted", got[0].icon)
+	if got[0].icon != iconMicMuted {
+		t.Errorf("icon = %v, want iconMicMuted", got[0].icon)
 	}
 
 	got = r.apply(selfPropsMuted(true, true))
 	wantNotices(t, got, []string{"self | You muted your speakers"})
-	if got[0].icon != IconSpeakerMuted {
-		t.Errorf("icon = %v, want IconSpeakerMuted", got[0].icon)
+	if got[0].icon != iconSpeakerMuted {
+		t.Errorf("icon = %v, want iconSpeakerMuted", got[0].icon)
 	}
 
 	// Both back at once: two notices, both showing the unmuted ring.
@@ -748,8 +790,8 @@ func TestRosterSelfMuteNotices(t *testing.T) {
 		"self | You unmuted your speakers",
 	})
 	for _, n := range got {
-		if n.icon != IconQuiet {
-			t.Errorf("icon = %v, want IconQuiet", n.icon)
+		if n.icon != iconUnmuted {
+			t.Errorf("icon = %v, want iconUnmuted", n.icon)
 		}
 	}
 }
@@ -778,8 +820,8 @@ func TestRosterSelfFlagIcons(t *testing.T) {
 	r := run5Roster(t)
 	got := r.apply(selfFlag("outputMuted", true))
 	wantNotices(t, got, []string{"self | You muted your speakers"})
-	if got[0].icon != IconSpeakerMuted {
-		t.Errorf("icon = %v, want IconSpeakerMuted", got[0].icon)
+	if got[0].icon != iconSpeakerMuted {
+		t.Errorf("icon = %v, want iconSpeakerMuted", got[0].icon)
 	}
 	if ns := r.apply(selfFlag("flagTalking", true)); len(ns) != 0 {
 		t.Errorf("flagTalking produced %v", lines(ns))
@@ -821,6 +863,71 @@ func TestRosterSelfMoved(t *testing.T) {
 			r := run5Roster(t)
 			wantNotices(t, r.apply(tc.in), tc.want)
 		})
+	}
+}
+
+// TestRosterNoticeIconsByKind pins the picture every kind of notice carries.
+// It is the direction that decides, not the event: a move is green when it
+// lands in our channel and red when it leaves it, and a kick is a departure
+// however it is spelled. Our own move keeps the app icon — we are still here —
+// while our own kick is a departure like anybody else's.
+func TestRosterNoticeIconsByKind(t *testing.T) {
+	// Client 33 is parked in channel 24; 23 is ours.
+	moved := func(client int, from, to string, typ int, invoker bool) json.RawMessage {
+		inv := ""
+		if invoker {
+			inv = `"invoker":{"id":33,"nickname":"RitzeTest"},`
+		}
+		return msg(fmt.Sprintf(`{"type":"clientMoved","payload":{"clientId":%d,"connectionId":4,
+			%s"newChannelId":%q,"oldChannelId":%q,"type":%d,"visibility":1}}`,
+			client, inv, to, from, typ))
+	}
+	for _, tc := range []struct {
+		name string
+		in   json.RawMessage
+		want notifyIcon
+	}{
+		{"join", moved(33, "24", "23", movedMove, false), iconJoin},
+		{"leave", moved(33, "23", "24", movedMove, false), iconLeave},
+		{"moved into our channel", moved(33, "24", "23", movedMoved, true), iconJoin},
+		{"moved out of our channel", moved(33, "23", "24", movedMoved, true), iconLeave},
+		{"kicked from our channel", moved(33, "23", "24", movedKickChannel, true), iconLeave},
+		{"kicked into our channel is an arrival", moved(33, "24", "23", movedKickChannel, true), iconJoin},
+		{"timed out", moved(33, "23", "0", movedTimeout, false), iconLeave},
+		{"banned", moved(33, "23", "0", movedBanFromServer, true), iconLeave},
+		{"disconnected", moved(33, "23", "0", movedMove, false), iconLeave},
+		{"we were kicked", moved(30, "23", "24", movedKickChannel, true), iconLeave},
+		{"we were moved", moved(30, "23", "24", movedMoved, true), iconApp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := run5Roster(t)
+			// Put 33 in our channel first where the case needs it there.
+			if tc.in != nil && strings.Contains(string(tc.in), `"oldChannelId":"23"`) {
+				r.apply(moved(33, "24", "23", movedMove, false))
+			}
+			ns := r.apply(tc.in)
+			if len(ns) != 1 {
+				t.Fatalf("got %v, want one notice", lines(ns))
+			}
+			if ns[0].icon != tc.want {
+				t.Errorf("%q icon = %q, want %q", ns[0].title, ns[0].icon, tc.want)
+			}
+		})
+	}
+
+	// Messages, pokes and a lost connection have no picture of their own.
+	r := run5Roster(t)
+	for _, m := range []json.RawMessage{
+		msg(`{"type":"textMessage","payload":{"connectionId":4,"invoker":{"id":33,"nickname":"RitzeTest"},"message":"hi","targetMode":1}}`),
+		msg(`{"type":"textMessage","payload":{"connectionId":4,"invoker":{"id":33,"nickname":"RitzeTest"},"message":"hi","targetMode":2}}`),
+		msg(`{"type":"textMessage","payload":{"connectionId":4,"invoker":{"id":33,"nickname":"RitzeTest"},"message":"hi","targetMode":3}}`),
+		msg(`{"type":"textMessage","payload":{"connectionId":4,"invoker":{"id":33,"nickname":"RitzeTest"},"message":"hi","targetMode":4}}`),
+	} {
+		for _, n := range r.apply(m) {
+			if n.icon != iconApp {
+				t.Errorf("%q icon = %q, want the app icon", n.title, n.icon)
+			}
+		}
 	}
 }
 
