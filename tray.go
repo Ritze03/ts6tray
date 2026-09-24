@@ -32,6 +32,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -515,20 +516,57 @@ const (
 	trayIDClickSpeaker int32 = 25
 
 	// The Notifications submenu inside Settings, and the separator above it.
-	// Its checkmark children start at trayIDNotify0, one per trayNotifyGroups
-	// entry, in that order.
-	//
-	// Below those, a separator and the two option checkmarks, which are
+	// Its checkmark children started at trayIDNotify0, one per trayNotifyGroups
+	// entry; below those a separator and the option checkmarks, which are
 	// switches of the same kind but about how notifications are delivered
 	// rather than which events produce them.
+	//
+	// The ids are pinned per switch in trayNotifyID rather than derived from
+	// the position, because 30–40 shipped: the switches added afterwards get
+	// fresh ids at the end instead of shifting the options out from under a
+	// host that has already drawn the menu.
 	trayIDNotify     int32 = 26
 	trayIDSep4       int32 = 27
 	trayIDNotify0    int32 = 30
 	trayIDSep5       int32 = 38
 	trayIDNotifyOpt0 int32 = 39
 
+	trayIDNotifySelf      int32 = 41
+	trayIDNotifyServerMsg int32 = 42
+	trayIDNotifyQuiet     int32 = 43
+
 	trayIDServer0 int32 = 100
 )
+
+// trayNotifyID is the dbusmenu item id of every switch's checkmark, by config
+// key. 30–37 are the eight kinds the first release shipped, 39/40 its two
+// delivery options; everything after that is numbered from 41 up.
+var trayNotifyID = map[string]int32{
+	"joinleave":  trayIDNotify0,
+	"moved":      trayIDNotify0 + 1,
+	"kicked":     trayIDNotify0 + 2,
+	"mute":       trayIDNotify0 + 3,
+	"privateMsg": trayIDNotify0 + 4,
+	"poke":       trayIDNotify0 + 5,
+	"channelMsg": trayIDNotify0 + 6,
+	"connLost":   trayIDNotify0 + 7,
+
+	trayOptBatch:   trayIDNotifyOpt0,
+	trayOptReplace: trayIDNotifyOpt0 + 1,
+
+	"self":               trayIDNotifySelf,
+	"serverMsg":          trayIDNotifyServerMsg,
+	trayOptQuietWhenDeaf: trayIDNotifyQuiet,
+}
+
+// trayNotifyKeyByID is trayNotifyID reversed, for the click handler.
+var trayNotifyKeyByID = func() map[int32]string {
+	m := make(map[int32]string, len(trayNotifyID))
+	for k, id := range trayNotifyID {
+		m[id] = k
+	}
+	return m
+}()
 
 // trayMenuNode is the dbusmenu layout struct: (ia{sv}av).
 type trayMenuNode struct {
@@ -624,6 +662,7 @@ type tray struct {
 	// nothing talks to a real TeamSpeak.
 	mute      func(target, mode string) (bool, error)
 	press     func(button string) error
+	snapshot  func() ([]Conn, Icon, bool)
 	bindDelay time.Duration // 0 means trayBindDelay
 
 	// notifyFn, when set, takes the place of the D-Bus Notify call. Tests use
@@ -676,170 +715,14 @@ func (t *tray) pressFunc() func(string) error {
 	return t.ts.Press
 }
 
-// --- the click-target setting ----------------------------------------------
-
-// trayConfigPath is $XDG_CONFIG_HOME/ts6tray/config, next to the API key.
-func trayConfigPath() string { return filepath.Join(filepath.Dir(DefaultKeyPath()), "config") }
-
-// The config file is a flat list of "key=value" lines:
-//
-//	click=mic|speaker
-//	notify.<group>=on|off
-//
-// Anything else — blank lines, "#" comments, garbage, unknown keys — is ignored,
-// and a missing key falls back to its default, so the older one-line
-// "click=speaker" file still loads unchanged. Writes always rewrite the whole
-// file, keeping the keys we do not own.
-
-// trayReadConfig parses the config file into key/value pairs. A missing or
-// unreadable file is an empty config, which means "all defaults".
-func trayReadConfig(path string) map[string]string {
-	out := map[string]string{}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return out
+func (t *tray) snapshotFunc() func() ([]Conn, Icon, bool) {
+	if t.snapshot != nil {
+		return t.snapshot
 	}
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	if t.ts == nil {
+		return func() ([]Conn, Icon, bool) { return nil, IconNone, false }
 	}
-	return out
-}
-
-// trayWriteConfig rewrites the whole config file, creating the dir. Keys are
-// sorted so the file is stable and diffable.
-func trayWriteConfig(path string, kv map[string]string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	keys := make([]string, 0, len(kv))
-	for k := range kv {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(kv[k])
-		b.WriteByte('\n')
-	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
-}
-
-// trayReadClick reads the persisted left-click target. A missing, unreadable or
-// unrecognised value means the default, "mic".
-func trayReadClick(path string) string {
-	if v := trayReadConfig(path)["click"]; v == "speaker" || v == "mic" {
-		return v
-	}
-	return "mic"
-}
-
-// trayWriteClick persists the left-click target, leaving the notification
-// switches in the file alone.
-func trayWriteClick(path, click string) error {
-	kv := trayReadConfig(path)
-	kv["click"] = click
-	return trayWriteConfig(path, kv)
-}
-
-// trayNotifyGroup is one on/off switch in Settings -> Notifications. One switch
-// can cover more than one noticeKind: "joins or leaves" is a single choice for
-// the user but two kinds on the wire.
-type trayNotifyGroup struct {
-	key   string // config key suffix: notify.<key>
-	label string
-	def   bool // default when the config says nothing
-	kinds []noticeKind
-}
-
-// trayNotifyGroups is the menu order, the config keys and the defaults, all in
-// one place. Messages, pokes, channel messages and other people's mute changes
-// are off by default: TeamSpeak already pops up its own notification for the
-// first three, and the fourth is constant chatter.
-var trayNotifyGroups = []trayNotifyGroup{
-	{"joinleave", "Someone joins or leaves my channel", true, []noticeKind{noticeJoin, noticeLeave}},
-	{"moved", "Someone is moved in or out", true, []noticeKind{noticeMoved}},
-	{"kicked", "Someone is kicked or times out", true, []noticeKind{noticeKicked}},
-	{"mute", "Someone in my channel mutes or unmutes", false, []noticeKind{noticeMute}},
-	{"privateMsg", "Private messages", false, []noticeKind{noticePrivateMsg}},
-	{"poke", "Pokes", false, []noticeKind{noticePoke}},
-	{"channelMsg", "Channel messages", false, []noticeKind{noticeChannelMsg}},
-	{"connLost", "Connection lost", true, []noticeKind{noticeConnLost}},
-}
-
-// trayNotifyOptions are the two delivery switches at the bottom of the same
-// submenu. They govern no noticeKind, so kinds is nil and notifyEnabled never
-// sees them; notifyOptOn reads them instead.
-const (
-	trayOptBatch   = "batch"
-	trayOptReplace = "replace"
-)
-
-var trayNotifyOptions = []trayNotifyGroup{
-	{trayOptBatch, "Group bursts (0.5 s)", true, nil},
-	{trayOptReplace, "Replace previous notification", true, nil},
-}
-
-// trayNotifySwitches is every switch in the submenu, kinds first: what the
-// config file stores and what the defaults cover.
-var trayNotifySwitches = append(append([]trayNotifyGroup{}, trayNotifyGroups...), trayNotifyOptions...)
-
-// trayNotifyKindGroup maps a noticeKind back to the switch that governs it.
-var trayNotifyKindGroup = func() map[noticeKind]string {
-	m := map[noticeKind]string{}
-	for _, g := range trayNotifyGroups {
-		for _, k := range g.kinds {
-			m[k] = g.key
-		}
-	}
-	return m
-}()
-
-// trayNotifyDefaults is a fresh copy of the default switch positions.
-func trayNotifyDefaults() map[string]bool {
-	m := make(map[string]bool, len(trayNotifySwitches))
-	for _, g := range trayNotifySwitches {
-		m[g.key] = g.def
-	}
-	return m
-}
-
-// trayReadNotify reads the notification switches, defaulting anything missing
-// or unparsable.
-func trayReadNotify(path string) map[string]bool {
-	m := trayNotifyDefaults()
-	kv := trayReadConfig(path)
-	for _, g := range trayNotifySwitches {
-		switch kv["notify."+g.key] {
-		case "on":
-			m[g.key] = true
-		case "off":
-			m[g.key] = false
-		}
-	}
-	return m
-}
-
-// trayWriteNotify persists the notification switches, leaving click= alone.
-func trayWriteNotify(path string, m map[string]bool) error {
-	kv := trayReadConfig(path)
-	for _, g := range trayNotifySwitches {
-		v := "off"
-		if m[g.key] {
-			v = "on"
-		}
-		kv["notify."+g.key] = v
-	}
-	return trayWriteConfig(path, kv)
+	return t.ts.Snapshot
 }
 
 // trayOther is the target the middle click gets: whichever one left-click has
@@ -942,11 +825,83 @@ func (t *tray) notifyOptOnLocked(key string) bool {
 	return trayNotifyDefaults()[key]
 }
 
+// quietNow reports whether notifications should be held back because our own
+// speakers are muted. "Any live connection" rather than the active one: the
+// active connection is the one holding the *microphone*, which says nothing
+// about what we can hear, and a user who muted their speakers anywhere has
+// stepped away from all of it.
+func (t *tray) quietNow() bool {
+	if !t.notifyOptOn(trayOptQuietWhenDeaf) {
+		return false
+	}
+	conns, _, up := t.snapshotFunc()()
+	if !up {
+		return false
+	}
+	for _, c := range conns {
+		if c.OutputMuted {
+			return true
+		}
+	}
+	return false
+}
+
+// reloadConfig re-reads the config file and republishes the menu, so the
+// checkmarks follow a change made by `ts6tray settings` in another process.
+// It is what the IPC "reload" request calls.
+func (t *tray) reloadConfig() error {
+	path := trayConfigPath()
+	t.cfgMu.Lock()
+	click, notif := trayReadClick(path), trayReadNotify(path)
+	t.cfgMu.Unlock()
+
+	t.mu.Lock()
+	t.click, t.notif = click, notif
+	t.mu.Unlock()
+
+	// Same reason as in toggleNotify: switching batching off must not strand
+	// whatever is already queued.
+	if !notif[trayOptBatch] && t.batch != nil {
+		t.batch.flush()
+	}
+	t.refresh()
+	return nil
+}
+
+// trayReload is the handle the IPC server holds on a tray that does not exist
+// yet: main.go starts ServeIPC before RunTray, and RunTray fills it in once the
+// tray is up. Until then — and forever, when there is no session bus — Reload
+// says so rather than pretending it worked.
+type trayReload struct{ fn atomic.Pointer[func() error] }
+
+func (r *trayReload) set(fn func() error) { r.fn.Store(&fn) }
+
+func (r *trayReload) Reload() error {
+	if r == nil {
+		return errNoTray
+	}
+	if fn := r.fn.Load(); fn != nil {
+		return (*fn)()
+	}
+	return errNoTray
+}
+
+// errNoTray is what a reload reports when the daemon is running without a tray
+// icon. The settings themselves are already on disk; only the menu is missing.
+var errNoTray = errors.New("the daemon is running without a tray icon; the settings are saved and take effect on its next start")
+
 // onNotice shows one notice from the TSClient, if its kind is switched on.
 // With "Group bursts" on it goes into the batcher instead and is shown, with
 // whatever else arrives in the next half second, as a single notification.
 func (t *tray) onNotice(n notice) {
 	if !t.notifyEnabled(n.kind) {
+		return
+	}
+	// "Silence while my speakers are muted": dropped outright rather than
+	// queued, so unmuting does not then flush a pile of stale news. Losing the
+	// connection is the one thing that still gets through — the whole point of
+	// that notice is that nothing else will be arriving.
+	if n.kind != noticeConnLost && t.quietNow() {
 		return
 	}
 	if t.batch != nil && t.notifyOptOn(trayOptBatch) {
@@ -1034,7 +989,9 @@ func trayToggleOnlyDiff(old, rows []trayRow) ([]trayMenuProps, bool) {
 // RunTray runs the StatusNotifierItem until ctx is done. It never returns an
 // error for a missing or restarting tray host; only a broken session bus or a
 // failed export is fatal.
-func RunTray(ctx context.Context, c *TSClient, quit func()) error {
+// rl, when not nil, is handed the tray's config reload so the IPC server —
+// which was already listening before this function ran — can call it.
+func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) error {
 	// Nothing to show if we are already shutting down: a second daemon whose
 	// IPC bind failed must not flash an icon on its way out.
 	if ctx.Err() != nil {
@@ -1077,6 +1034,9 @@ func RunTray(ctx context.Context, c *TSClient, quit func()) error {
 	}
 	if quit == nil {
 		t.quit = func() {}
+	}
+	if rl != nil {
+		rl.set(t.reloadConfig)
 	}
 
 	// Watch for the tray host coming and going, so a shell restart re-registers.
@@ -1463,25 +1423,26 @@ func trayRowsFor(conns []Conn, click, binding string, notif map[string]bool) []t
 	)
 	// Children of Notifications: one checkmark per switch, in the declared
 	// order, so the id is the index and nothing has to be looked up by label.
-	for i, g := range trayNotifyGroups {
-		on := g.def
-		if v, ok := notif[g.key]; ok {
-			on = v
-		}
-		rows = append(rows, trayRow{id: trayIDNotify0 + int32(i), parent: trayIDNotify,
-			label: g.label, enabled: true, check: true, checked: on})
+	for _, g := range trayNotifyGroups {
+		rows = append(rows, trayNotifyRow(g, notif))
 	}
 	// …then, below a separator, how the ones that are on get delivered.
 	rows = append(rows, trayRow{id: trayIDSep5, parent: trayIDNotify, separator: true})
-	for i, o := range trayNotifyOptions {
-		on := o.def
-		if v, ok := notif[o.key]; ok {
-			on = v
-		}
-		rows = append(rows, trayRow{id: trayIDNotifyOpt0 + int32(i), parent: trayIDNotify,
-			label: o.label, enabled: true, check: true, checked: on})
+	for _, o := range trayNotifyOptions {
+		rows = append(rows, trayNotifyRow(o, notif))
 	}
 	return rows
+}
+
+// trayNotifyRow is one checkmark in the Notifications submenu, at that switch's
+// pinned id.
+func trayNotifyRow(g trayNotifyGroup, notif map[string]bool) trayRow {
+	on := g.def
+	if v, ok := notif[g.key]; ok {
+		on = v
+	}
+	return trayRow{id: trayNotifyID[g.key], parent: trayIDNotify,
+		label: g.label, enabled: true, check: true, checked: on}
 }
 
 func trayRowsEqual(a, b []trayRow) bool {
@@ -1823,11 +1784,8 @@ func (t *tray) Event(id int32, eventID string, data dbus.Variant, timestamp uint
 	case trayIDQuit:
 		go t.quit()
 	default:
-		if i := int(id - trayIDNotify0); id >= trayIDNotify0 && i < len(trayNotifyGroups) {
-			go t.toggleNotify(trayNotifyGroups[i].key)
-		}
-		if i := int(id - trayIDNotifyOpt0); id >= trayIDNotifyOpt0 && i < len(trayNotifyOptions) {
-			go t.toggleNotify(trayNotifyOptions[i].key)
+		if key, ok := trayNotifyKeyByID[id]; ok {
+			go t.toggleNotify(key)
 		}
 	}
 	return nil

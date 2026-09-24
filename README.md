@@ -39,9 +39,21 @@ focus — you need both windows in that order.
 
 ## Usage
 
-Tray: left-click toggles the microphone, middle-click toggles the speaker (swappable under
-**Settings**, saved in `~/.config/ts6tray/config`). The right-click menu has per-server
-status, both toggles, **Settings** and **Quit**.
+Settings live in `~/.config/ts6tray/config`. The main way to change them is a terminal:
+
+```sh
+ts6tray settings
+```
+
+A small full-screen UI with every switch below — ↑↓ or `j`/`k` to move, space or enter to
+toggle, `q` to quit. Each toggle is saved immediately and the running daemon picks it up at
+once (`ts6tray reload` does that on its own, if you edit the file by hand). It is a separate,
+short-lived process, so the daemon's memory is untouched by it. The same switches are in the
+tray's right-click menu under **Settings**.
+
+Tray: left-click toggles the microphone, middle-click toggles the speaker (swappable in the
+settings). The right-click menu has per-server status, both toggles, **Settings** and
+**Quit**.
 
 CLI, with the daemon running:
 
@@ -49,6 +61,7 @@ CLI, with the daemon running:
 ts6tray mic toggle        # or: mute / unmute
 ts6tray speaker toggle    # or: mute / unmute
 ts6tray status
+ts6tray reload            # re-read the config file
 ```
 
 Mute commands don't queue — a second one while the first is still in progress reports
@@ -57,35 +70,45 @@ Mute commands don't queue — a second one while the first is still in progress 
 ## Notifications
 
 Desktop notifications for what happens in your channel and to you. Every one names the
-person. Switch them on and off under **Settings → Notifications**; the choice is saved in
-`~/.config/ts6tray/config` as `notify.<kind>=on|off`.
+person. Switch them on and off in `ts6tray settings` or under **Settings → Notifications**;
+the choice is saved in `~/.config/ts6tray/config` as `notify.<kind>=on|off`.
 
-| Notification | Default |
-| --- | --- |
-| Someone joins or leaves my channel | on |
-| Someone is moved in or out (and by whom) | on |
-| Someone is kicked or times out | on |
-| Someone in my channel mutes or unmutes | **off** |
-| Private messages | **off** |
-| Pokes | **off** |
-| Channel messages | **off** |
-| Connection lost | on |
+| Notification | Key | Default |
+| --- | --- | --- |
+| Someone joins or leaves my channel | `joinleave` | on |
+| Someone is moved in or out (and by whom) | `moved` | on |
+| Someone is kicked or times out | `kicked` | on |
+| Someone in my channel mutes or unmutes | `mute` | **off** |
+| Private messages | `privateMsg` | **off** |
+| Pokes | `poke` | **off** |
+| Channel messages | `channelMsg` | **off** |
+| Connection lost | `connLost` | on |
+| My own changes | `self` | **off** |
+| Server messages | `serverMsg` | **off** |
 
 Messages and pokes are off because TeamSpeak already pops up its own notification for them;
-mute changes and channel chatter are off because they are noisy. Nothing about yourself is
-ever notified, and with more than one server connected the title says which server it came
-from. Every notification carries ts6tray's own icon, unpacked once to
+mute changes and channel chatter are off because they are noisy. **My own changes** — you
+muting or unmuting your own microphone or speakers, and being moved or kicked by someone
+else — is off because the tray icon already says all of that; turn it on if you would rather
+read it. **Server messages** are server-wide broadcasts.
+
+Between them these cover everything TeamSpeak itself pops up, so you can have one source of
+notifications instead of two: turn messages, pokes and the rest off in TeamSpeak and on here.
+With more than one server connected the title says which server a notice came from.
+
+Every notification carries ts6tray's own icon, unpacked once to
 `~/.cache/ts6tray/ts6tray.svg` — except a mute notification, which shows the person's *new*
 state as its icon (muted speakers, muted microphone, or the plain ring when they are unmuted
 again), rendered once beside it as `state-*.png`; and a grouped notification, which lists its
 events numbered with the newest first and takes that newest event's icon.
 
-Below the list are two delivery options, both on by default and saved the same way:
+Below the list are the delivery options, saved the same way:
 
 | Option | Key | What it does |
 | --- | --- | --- |
 | Group bursts (0.5 s) | `notify.batch` | Waits half a second, and half a second again after each further event, then sends the whole burst as one notification with a numbered line per event, newest first. Five people moved at once is one notification, not five. It gives up waiting after 3 s. |
 | Replace previous notification | `notify.replace` | Each new notification takes the place of the last one, so only the newest is on screen. |
+| Silence while my speakers are muted | `notify.quietWhenDeaf` | **Off by default.** While your speakers are muted on any connected server, event notifications are dropped rather than held back — you muted them to be left alone, and unmuting should not then deliver the backlog. A lost connection still comes through. |
 
 Kick, ban and timeout wording is best-effort: TeamSpeak has never sent one during a capture,
 so it follows the client's documented event codes rather than an observed message, and a kick

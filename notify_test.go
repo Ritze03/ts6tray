@@ -705,3 +705,146 @@ func TestNoticeBatcherFlush(t *testing.T) {
 		t.Errorf("sent = %q, want one batch", sent)
 	}
 }
+
+// --- our own changes -------------------------------------------------------
+
+// msg is one raw event, written the way the capture does.
+func msg(s string) json.RawMessage { return json.RawMessage(s) }
+
+// selfPropsMuted is a clientPropertiesUpdated for our own client (30) on
+// connection 4 with the two mute flags set as given.
+func selfPropsMuted(in, out bool) json.RawMessage {
+	return msg(fmt.Sprintf(`{"type":"clientPropertiesUpdated","payload":{"clientId":30,"connectionId":4,
+		"properties":{"nickname":"Ritze","inputMuted":%t,"outputMuted":%t}}}`, in, out))
+}
+
+// selfFlag is the other event that reports the same thing, one flag at a time.
+func selfFlag(flag string, v bool) json.RawMessage {
+	return msg(fmt.Sprintf(`{"type":"clientSelfPropertyUpdated","payload":{"connectionId":4,
+		"flag":%q,"oldValue":%t,"newValue":%t}}`, flag, !v, v))
+}
+
+// TestRosterSelfMuteNotices: our own mute changes are notices of their own, and
+// they carry the same resulting-state icon other people's mute notices do.
+func TestRosterSelfMuteNotices(t *testing.T) {
+	r := run5Roster(t)
+
+	got := r.apply(selfPropsMuted(true, false))
+	wantNotices(t, got, []string{"self | You muted your microphone"})
+	if got[0].icon != IconMicMuted {
+		t.Errorf("icon = %v, want IconMicMuted", got[0].icon)
+	}
+
+	got = r.apply(selfPropsMuted(true, true))
+	wantNotices(t, got, []string{"self | You muted your speakers"})
+	if got[0].icon != IconSpeakerMuted {
+		t.Errorf("icon = %v, want IconSpeakerMuted", got[0].icon)
+	}
+
+	// Both back at once: two notices, both showing the unmuted ring.
+	got = r.apply(selfPropsMuted(false, false))
+	wantNotices(t, got, []string{
+		"self | You unmuted your microphone",
+		"self | You unmuted your speakers",
+	})
+	for _, n := range got {
+		if n.icon != IconQuiet {
+			t.Errorf("icon = %v, want IconQuiet", n.icon)
+		}
+	}
+}
+
+// TestRosterSelfMuteNotifiesOnce: TeamSpeak reports one of our own mute flips
+// twice, as clientPropertiesUpdated *and* clientSelfPropertyUpdated, in either
+// order. Whichever lands first is the notice; the second must be silent.
+func TestRosterSelfMuteNotifiesOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msgs []json.RawMessage
+	}{
+		{"properties first", []json.RawMessage{selfPropsMuted(true, false), selfFlag("inputMuted", true)}},
+		{"self flag first", []json.RawMessage{selfFlag("inputMuted", true), selfPropsMuted(true, false)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := run5Roster(t)
+			wantNotices(t, applyAll(r, tc.msgs), []string{"self | You muted your microphone"})
+		})
+	}
+}
+
+// TestRosterSelfFlagIcons: a mute reported only as a self flag still gets the
+// right icon, and flags that are not about muting say nothing at all.
+func TestRosterSelfFlagIcons(t *testing.T) {
+	r := run5Roster(t)
+	got := r.apply(selfFlag("outputMuted", true))
+	wantNotices(t, got, []string{"self | You muted your speakers"})
+	if got[0].icon != IconSpeakerMuted {
+		t.Errorf("icon = %v, want IconSpeakerMuted", got[0].icon)
+	}
+	if ns := r.apply(selfFlag("flagTalking", true)); len(ns) != 0 {
+		t.Errorf("flagTalking produced %v", lines(ns))
+	}
+}
+
+// TestRosterSelfMoved: being moved by someone else is a notice and names the
+// channel when the snapshot's channel tree knew it; our own move is not.
+func TestRosterSelfMoved(t *testing.T) {
+	moved := func(typ int, ch string, invoker string) json.RawMessage {
+		inv := ""
+		if invoker != "" {
+			inv = `"invoker":` + invoker + `,`
+		}
+		return msg(fmt.Sprintf(`{"type":"clientMoved","payload":{"clientId":30,"connectionId":4,
+			%s"newChannelId":%q,"oldChannelId":"23","type":%d,"visibility":1}}`, inv, ch, typ))
+	}
+	const other = `{"id":33,"nickname":"RitzeTest"}`
+	const us = `{"id":30,"nickname":"Ritze"}`
+
+	for _, tc := range []struct {
+		name string
+		in   json.RawMessage
+		want []string
+	}{
+		{"moved by someone into a known channel", moved(movedMoved, "37", other),
+			[]string{"self | RitzeTest moved you to ╠ Rastung (live)"}},
+		{"moved into a channel we have no name for", moved(movedMoved, "9999", other),
+			[]string{"self | RitzeTest moved you to another channel"}},
+		{"our own move", moved(movedMove, "37", ""), []string{}},
+		{"a type 2 move we invoked ourselves", moved(movedMoved, "37", us), []string{}},
+		{"kicked from the channel", moved(movedKickChannel, "1", other),
+			[]string{"self | You were kicked from the channel"}},
+		{"kicked from the server", moved(movedKickServer, "0", other),
+			[]string{"self | You were kicked from the server"}},
+		{"timed out", moved(movedTimeout, "0", ""), []string{"self | You timed out"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := run5Roster(t)
+			wantNotices(t, r.apply(tc.in), tc.want)
+		})
+	}
+}
+
+// TestRosterServerMessage: targetMode 3 is a server-wide broadcast, which used
+// to be silent and now has a switch of its own.
+func TestRosterServerMessage(t *testing.T) {
+	r := run5Roster(t)
+	got := r.apply(msg(`{"type":"textMessage","payload":{"connectionId":4,
+		"invoker":{"id":33,"nickname":"RitzeTest"},"message":"reboot in 5 <min>","targetMode":3}}`))
+	wantNotices(t, got, []string{"serverMsg | RitzeTest (server) | reboot in 5 &lt;min&gt;"})
+}
+
+// TestRosterLearnsChannelNamesFromTheChannelsEvent: a server we connect to
+// after the snapshot sends its channel tree as a `channels` event, which is
+// where "moved you to X" then gets the name from.
+func TestRosterLearnsChannelNamesFromTheChannelsEvent(t *testing.T) {
+	r := run5Roster(t)
+	if ns := r.apply(msg(`{"type":"channels","payload":{"connectionId":4,"info":{
+		"rootChannels":[{"id":"70","properties":{"name":"Lobby"}}],
+		"subChannels":{"70":[{"id":"71","properties":{"name":"AFK"}}]}}}}`)); len(ns) != 0 {
+		t.Errorf("the channel tree produced notices: %v", lines(ns))
+	}
+	got := r.apply(msg(`{"type":"clientMoved","payload":{"clientId":30,"connectionId":4,
+		"invoker":{"id":33,"nickname":"RitzeTest"},"newChannelId":"71","oldChannelId":"23",
+		"type":2,"visibility":1}}`))
+	wantNotices(t, got, []string{"self | RitzeTest moved you to AFK"})
+}

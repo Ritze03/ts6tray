@@ -59,11 +59,16 @@ func serve(t *testing.T, b ipcBackend) (string, func()) {
 	return path, serveAt(t, b, path)
 }
 
-func serveAt(t *testing.T, b ipcBackend, path string) func() {
+// reload is optional; without one the daemon under test has no tray to reload.
+func serveAt(t *testing.T, b ipcBackend, path string, reload ...func() error) func() {
 	t.Helper()
+	var rl func() error
+	if len(reload) == 1 {
+		rl = reload[0]
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
-	go func() { errc <- ServeIPC(ctx, b, path) }()
+	go func() { errc <- ServeIPC(ctx, b, path, rl) }()
 	waitReady(t, path)
 	stopped := false
 	stop := func() {
@@ -308,7 +313,7 @@ func TestSecondServeIPCOnLiveSocketErrors(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := ServeIPC(ctx, b, path)
+	err := ServeIPC(ctx, b, path, nil)
 	if err == nil {
 		t.Fatal("second ServeIPC returned nil, want an already-running error")
 	}
@@ -578,5 +583,71 @@ func TestShutdownDoesNotUnlinkSuccessorSocket(t *testing.T) {
 	}
 	if code, out := run(t, path, "status"); code != 0 {
 		t.Errorf("successor daemon not answering: exit %d, %q", code, out)
+	}
+}
+
+// --- reload ----------------------------------------------------------------
+
+// TestIPCReloadCallsTheTray: `ts6tray reload` is what the settings TUI sends
+// after every write, so the running daemon picks the change up.
+func TestIPCReloadCallsTheTray(t *testing.T) {
+	var calls atomic.Int32
+	b := &fakeBackend{up: true}
+	path := filepath.Join(t.TempDir(), "s.sock")
+	stop := serveAt(t, b, path, func() error { calls.Add(1); return nil })
+	defer stop()
+
+	code, out := run(t, path, "reload")
+	if code != 0 || !strings.Contains(out, "settings reloaded") {
+		t.Errorf("reload: exit %d, output %q", code, out)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("reload func called %d times, want 1", calls.Load())
+	}
+
+	// A bad request is still an error, and still does not reach the tray.
+	if code, out := run(t, path, "reload", "now"); code == 0 {
+		t.Errorf("`reload now` succeeded: %q", out)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("a malformed reload reached the tray (%d calls)", calls.Load())
+	}
+}
+
+// TestIPCReloadReportsFailures: no tray, or a tray that could not reload, is an
+// "err" reply with the reason, not a silent success.
+func TestIPCReloadReportsFailures(t *testing.T) {
+	t.Run("no reload func", func(t *testing.T) {
+		b := &fakeBackend{up: true}
+		path, stop := serve(t, b)
+		defer stop()
+		code, out := run(t, path, "reload")
+		if code == 0 || !strings.Contains(out, "cannot reload") {
+			t.Errorf("exit %d, output %q", code, out)
+		}
+	})
+	t.Run("the reload failed", func(t *testing.T) {
+		b := &fakeBackend{up: true}
+		path := filepath.Join(t.TempDir(), "s.sock")
+		stop := serveAt(t, b, path, func() error { return errors.New("no tray icon") })
+		defer stop()
+		code, out := run(t, path, "reload")
+		if code == 0 || !strings.Contains(out, "no tray icon") {
+			t.Errorf("exit %d, output %q", code, out)
+		}
+	})
+}
+
+// TestTrayReloadHandle: the IPC server is started before the tray exists, so
+// the handle it holds has to answer sensibly until RunTray fills it in.
+func TestTrayReloadHandle(t *testing.T) {
+	var rl trayReload
+	if err := rl.Reload(); err == nil {
+		t.Error("an unset trayReload reported success")
+	}
+	called := false
+	rl.set(func() error { called = true; return nil })
+	if err := rl.Reload(); err != nil || !called {
+		t.Errorf("Reload() = %v, called = %v", err, called)
 	}
 }

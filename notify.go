@@ -45,6 +45,8 @@ const (
 	noticePoke
 	noticeChannelMsg
 	noticeConnLost
+	noticeSelf      // our own mute changes, and being moved or kicked by someone
+	noticeServerMsg // a server-wide broadcast
 )
 
 func (k noticeKind) String() string {
@@ -67,6 +69,10 @@ func (k noticeKind) String() string {
 		return "channelMsg"
 	case noticeConnLost:
 		return "connLost"
+	case noticeSelf:
+		return "self"
+	case noticeServerMsg:
+		return "serverMsg"
 	}
 	return "unknown"
 }
@@ -136,9 +142,10 @@ type rosterConn struct {
 	channel  string // the channel we are in, "" while unknown
 	server   string // human-readable server name, for the title suffix
 
-	nick  map[int]string  // clientId -> nickname
-	chans map[int]string  // clientId -> channel id
-	mute  map[int][2]bool // clientId -> {inputMuted, outputMuted}
+	nick  map[int]string    // clientId -> nickname
+	chans map[int]string    // clientId -> channel id
+	mute  map[int][2]bool   // clientId -> {inputMuted, outputMuted}
+	cname map[string]string // channelId -> channel name, for "moved you to X"
 }
 
 func newRosterConn() *rosterConn {
@@ -146,6 +153,7 @@ func newRosterConn() *rosterConn {
 		nick:  map[int]string{},
 		chans: map[int]string{},
 		mute:  map[int][2]bool{},
+		cname: map[string]string{},
 	}
 }
 
@@ -180,6 +188,38 @@ type rosterInvoker struct {
 	Nickname string  `json:"nickname"`
 }
 
+// rosterChannel is one entry of a channel tree, which arrives twice in the same
+// shape: as connections[].channelInfos in the auth snapshot, and as the
+// `channels` event's payload.info after connecting to a server. Only the name
+// is of interest — it is what "X moved you to <channel>" needs.
+type rosterChannel struct {
+	ID         flexInt `json:"id"`
+	Properties struct {
+		Name string `json:"name"`
+	} `json:"properties"`
+}
+
+// rosterChannelTree is {rootChannels: [...], subChannels: {parentId: [...]}}.
+type rosterChannelTree struct {
+	RootChannels []rosterChannel            `json:"rootChannels"`
+	SubChannels  map[string][]rosterChannel `json:"subChannels"`
+}
+
+// learn records every channel name in the tree.
+func (t rosterChannelTree) learn(rc *rosterConn) {
+	add := func(cs []rosterChannel) {
+		for _, c := range cs {
+			if c.Properties.Name != "" {
+				rc.cname[strconv.Itoa(int(c.ID))] = c.Properties.Name
+			}
+		}
+	}
+	add(t.RootChannels)
+	for _, cs := range t.SubChannels {
+		add(cs)
+	}
+}
+
 // --- seeding from the auth snapshot ---------------------------------------
 
 // auth seeds the roster from the auth reply's payload. It never produces
@@ -192,7 +232,8 @@ func (r *roster) auth(payload []byte) {
 			Properties struct {
 				Name string `json:"name"`
 			} `json:"properties"`
-			ClientInfos []struct {
+			ChannelInfos rosterChannelTree `json:"channelInfos"`
+			ClientInfos  []struct {
 				ID         flexInt     `json:"id"`
 				ChannelID  flexInt     `json:"channelId"`
 				Properties rosterProps `json:"properties"`
@@ -206,6 +247,7 @@ func (r *roster) auth(payload []byte) {
 		rc := r.conn(int(c.ID))
 		rc.clientID = int(c.ClientID)
 		rc.server = c.Properties.Name
+		c.ChannelInfos.learn(rc)
 		for _, ci := range c.ClientInfos {
 			id := int(ci.ID)
 			ch := strconv.Itoa(int(ci.ChannelID))
@@ -237,6 +279,10 @@ func (r *roster) apply(msg []byte) []notice {
 		return r.applyMoved(env.Payload)
 	case "clientPropertiesUpdated":
 		return r.applyProps(env.Payload)
+	case "clientSelfPropertyUpdated":
+		return r.applySelfProp(env.Payload)
+	case "channels":
+		return r.applyChannels(env.Payload)
 	case "textMessage":
 		return r.applyText(env.Payload)
 	case "connectStatusChanged":
@@ -299,7 +345,7 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 		if gone {
 			rc.channel = ""
 		}
-		return nil
+		return r.selfMoved(rc, int(p.Type), p.Invoker, newCh, escapeRunes(p.Reason, noticeMaxBody))
 	}
 	if rc.channel == "" {
 		return nil
@@ -397,8 +443,15 @@ func (r *roster) applyProps(raw json.RawMessage) []notice {
 	now := [2]bool{bool(p.Properties.InputMuted), bool(p.Properties.OutputMuted)}
 	was, known := rc.mute[id]
 	rc.mute[id] = now
-	if !known || id == rc.clientID {
-		return nil // no baseline to diff against, or it is us
+	if !known {
+		return nil // no baseline to diff against
+	}
+	if id == rc.clientID {
+		// Our own mute changes are a switch of their own ("My own changes"),
+		// and rc.mute is the single baseline both this event and
+		// clientSelfPropertyUpdated diff against — which is what keeps the two
+		// of them from announcing the same flip twice.
+		return r.selfMute(rc, was, now)
 	}
 	// No channelId in this event: membership comes from the snapshot plus
 	// clientMoved only (channelGroupInheritedChannelId is a permission field).
@@ -419,6 +472,102 @@ func (r *roster) applyProps(raw json.RawMessage) []notice {
 		out = append(out, n)
 	}
 	return out
+}
+
+// applySelfProp handles clientSelfPropertyUpdated, the *other* event that
+// reports our own mute state. It carries one flag with its new value, and it
+// arrives alongside a clientPropertiesUpdated for our own clientId saying the
+// same thing — in either order. Both write the same rc.mute[clientID] baseline
+// and both notify only on a real difference, so whichever lands first speaks
+// and the second one sees nothing to report.
+func (r *roster) applySelfProp(raw json.RawMessage) []notice {
+	var p struct {
+		ConnectionID flexInt  `json:"connectionId"`
+		Flag         string   `json:"flag"`
+		NewValue     flexBool `json:"newValue"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil
+	}
+	i := 0
+	switch p.Flag {
+	case "inputMuted":
+	case "outputMuted":
+		i = 1
+	default:
+		return nil // the other self flags are not about muting
+	}
+	rc := r.conn(int(p.ConnectionID))
+	if rc.clientID == 0 {
+		return nil // we do not know who we are yet
+	}
+	was, known := rc.mute[rc.clientID]
+	now := was
+	now[i] = bool(p.NewValue)
+	rc.mute[rc.clientID] = now
+	if !known {
+		return nil
+	}
+	return r.selfMute(rc, was, now)
+}
+
+// selfMute turns a change in our own {inputMuted, outputMuted} into notices,
+// with the same resulting-state icon other people's mute notices get.
+func (r *roster) selfMute(rc *rosterConn, was, now [2]bool) []notice {
+	ic := noticeIcon(now)
+	var out []notice
+	if was[0] != now[0] {
+		n := r.mk(rc, noticeSelf, "You "+mutedWord(now[0])+" your microphone", "")
+		n.icon = ic
+		out = append(out, n)
+	}
+	if was[1] != now[1] {
+		n := r.mk(rc, noticeSelf, "You "+mutedWord(now[1])+" your speakers", "")
+		n.icon = ic
+		out = append(out, n)
+	}
+	return out
+}
+
+// selfMoved reports what someone else did to us. Our own moves (type 1) are
+// silent: we just did them, we know. A type 2 move only counts with an invoker
+// that is not us, since the client sends type 2 for a move we made ourselves
+// through the server as well.
+func (r *roster) selfMoved(rc *rosterConn, typ int, invoker *rosterInvoker, newCh, body string) []notice {
+	switch typ {
+	case movedMoved:
+		if invoker == nil || int(invoker.ID) == rc.clientID {
+			return nil
+		}
+		where := "another channel"
+		if n := rc.cname[newCh]; n != "" {
+			where = truncRunes(n, noticeMaxNick)
+		}
+		return []notice{r.mk(rc, noticeSelf, r.nickOf(rc, int(invoker.ID))+" moved you to "+where, body)}
+	case movedTimeout:
+		return []notice{r.mk(rc, noticeSelf, "You timed out", body)}
+	case movedKickChannel:
+		return []notice{r.mk(rc, noticeSelf, "You were kicked from the channel", body)}
+	case movedKickServer:
+		return []notice{r.mk(rc, noticeSelf, "You were kicked from the server", body)}
+	case movedBanFromServer:
+		return []notice{r.mk(rc, noticeSelf, "You were banned from the server", body)}
+	}
+	return nil
+}
+
+// applyChannels records the channel names of a newly connected server. It never
+// notifies; it only feeds "X moved you to <channel>".
+func (r *roster) applyChannels(raw json.RawMessage) []notice {
+	var p struct {
+		ConnectionID flexInt           `json:"connectionId"`
+		Info         rosterChannelTree `json:"info"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil
+	}
+	p.Info.learn(r.conn(int(p.ConnectionID)))
+	return nil
 }
 
 func mutedWord(muted bool) string {
@@ -457,8 +606,9 @@ func (r *roster) applyText(raw json.RawMessage) []notice {
 	case targetChannel:
 		return []notice{r.mk(rc, noticeChannelMsg, who+" in channel", body)}
 	case targetServer:
-		// Never observed; a server-wide broadcast is not one of the kinds the
-		// user asked for, so it stays silent rather than guessed at.
+		// A server-wide broadcast. Never observed in a capture, so the wording
+		// names the sender and says where it came from, nothing more.
+		return []notice{r.mk(rc, noticeServerMsg, who+" (server)", body)}
 	}
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -528,14 +529,14 @@ func TestTrayNotificationsLayout(t *testing.T) {
 	}
 
 	items := nodeChildren(notif)
-	// The eight kind checkmarks, a separator, then the two delivery options.
+	// The kind checkmarks, a separator, then the delivery options.
 	if want := len(trayNotifyGroups) + 1 + len(trayNotifyOptions); len(items) != want {
 		t.Fatalf("Notifications has %d children, want %d", len(items), want)
 	}
 	for i, g := range trayNotifyGroups {
 		n := items[i]
-		if n.ID != trayIDNotify0+int32(i) {
-			t.Errorf("child %d id = %d, want %d", i, n.ID, trayIDNotify0+int32(i))
+		if want := trayNotifyID[g.key]; n.ID != want {
+			t.Errorf("child %d (%s) id = %d, want %d", i, g.key, n.ID, want)
 		}
 		if got := propOf(t, n, "label"); got != g.label {
 			t.Errorf("child %d label = %q, want %q", i, got, g.label)
@@ -555,14 +556,17 @@ func TestTrayNotificationsLayout(t *testing.T) {
 	// The defaults the user asked for: joins/leaves, moves, kicks and lost
 	// connections on; mute churn, channel messages and — because TeamSpeak
 	// already pops those up itself — private messages and pokes off.
-	off := map[string]bool{"mute": true, "channelMsg": true, "privateMsg": true, "poke": true}
+	// "My own changes" and server broadcasts are off too: the tray icon already
+	// says what we just did, and a broadcast is rare and rarely wanted.
+	off := map[string]bool{"mute": true, "channelMsg": true, "privateMsg": true, "poke": true,
+		"self": true, "serverMsg": true}
 	for _, g := range trayNotifyGroups {
 		if g.def == off[g.key] {
 			t.Errorf("%s defaults to %v", g.key, g.def)
 		}
 	}
 
-	// The separator, then the two options, both on by default.
+	// The separator, then the options.
 	sep := items[len(trayNotifyGroups)]
 	if sep.ID != trayIDSep5 {
 		t.Errorf("separator id = %d, want %d", sep.ID, trayIDSep5)
@@ -572,8 +576,8 @@ func TestTrayNotificationsLayout(t *testing.T) {
 	}
 	for i, o := range trayNotifyOptions {
 		n := items[len(trayNotifyGroups)+1+i]
-		if n.ID != trayIDNotifyOpt0+int32(i) {
-			t.Errorf("option %d id = %d, want %d", i, n.ID, trayIDNotifyOpt0+int32(i))
+		if want := trayNotifyID[o.key]; n.ID != want {
+			t.Errorf("option %d (%s) id = %d, want %d", i, o.key, n.ID, want)
 		}
 		if got := propOf(t, n, "label"); got != o.label {
 			t.Errorf("option %d label = %q, want %q", i, got, o.label)
@@ -581,13 +585,21 @@ func TestTrayNotificationsLayout(t *testing.T) {
 		if got := propOf(t, n, "toggle-type"); got != "checkmark" {
 			t.Errorf("option %d toggle-type = %v, want checkmark", i, got)
 		}
-		if got := propOf(t, n, "toggle-state"); got != int32(1) {
-			t.Errorf("%s default toggle-state = %v, want 1 (on)", o.key, got)
+		want := int32(0)
+		if o.def {
+			want = 1
+		}
+		if got := propOf(t, n, "toggle-state"); got != want {
+			t.Errorf("%s default toggle-state = %v, want %v", o.key, got, want)
 		}
 	}
-	if got := []string{trayNotifyOptions[0].label, trayNotifyOptions[1].label}; !reflect.DeepEqual(got,
-		[]string{"Group bursts (0.5 s)", "Replace previous notification"}) {
-		t.Errorf("option labels = %q", got)
+	var labels []string
+	for _, o := range trayNotifyOptions {
+		labels = append(labels, o.label)
+	}
+	if !reflect.DeepEqual(labels, []string{"Group bursts (0.5 s)", "Replace previous notification",
+		"Silence while my speakers are muted"}) {
+		t.Errorf("option labels = %q", labels)
 	}
 }
 
@@ -1463,5 +1475,189 @@ func TestTrayToggleOnlyDiff(t *testing.T) {
 	}
 	if _, ok := trayToggleOnlyDiff(nil, base); ok {
 		t.Error("building the rows from nothing reports a toggle-only diff")
+	}
+}
+
+// --- "Silence while my speakers are muted" ---------------------------------
+
+// deafTray is a notification tray whose speaker-mute state the test controls.
+func deafTray(t *testing.T, deaf *atomic.Bool) (*tray, func() []notifyCall) {
+	t.Helper()
+	tr, got := newNotifyTray(t, time.Hour, time.Hour)
+	tr.snapshot = func() ([]Conn, Icon, bool) {
+		return []Conn{{ID: 1, Status: StatusConnectionEstablished, OutputMuted: deaf.Load()}}, IconQuiet, true
+	}
+	tr.notif[trayOptBatch] = false // deliver each notice as it arrives
+	return tr, got
+}
+
+// TestTrayQuietWhenDeaf: with the option on and our speakers muted, event
+// notices are dropped — except a lost connection, which still gets through.
+func TestTrayQuietWhenDeaf(t *testing.T) {
+	var deaf atomic.Bool
+	tr, got := deafTray(t, &deaf)
+	tr.notif[trayOptQuietWhenDeaf] = true
+
+	deaf.Store(true)
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+	tr.onNotice(notice{kind: noticeKicked, title: "B was kicked from the channel"})
+	if c := got(); len(c) != 0 {
+		t.Errorf("notified while deaf: %v", c)
+	}
+	tr.onNotice(notice{kind: noticeConnLost, title: "Lost connection to X"})
+	c := got()
+	if len(c) != 1 || c[0].title != "Lost connection to X" {
+		t.Fatalf("connLost did not get through: %v", c)
+	}
+
+	// Speakers back on: everything passes again.
+	deaf.Store(false)
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+	if c := got(); len(c) != 2 || c[1].title != "A joined your channel" {
+		t.Errorf("after unmuting: %v", c)
+	}
+}
+
+// TestTrayQuietWhenDeafOffPassesEverything: the option is off by default, so a
+// muted speaker on its own changes nothing.
+func TestTrayQuietWhenDeafOffPassesEverything(t *testing.T) {
+	var deaf atomic.Bool
+	deaf.Store(true)
+	tr, got := deafTray(t, &deaf)
+	if tr.notif[trayOptQuietWhenDeaf] {
+		t.Fatal("quietWhenDeaf defaults to on, want off")
+	}
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+	if c := got(); len(c) != 1 {
+		t.Errorf("calls = %v, want the notice through", c)
+	}
+}
+
+// TestTrayQuietWhenDeafDropsRatherThanQueues: a silenced notice must not sit in
+// the batcher waiting to be flushed the moment the speakers come back.
+func TestTrayQuietWhenDeafDropsRatherThanQueues(t *testing.T) {
+	var deaf atomic.Bool
+	deaf.Store(true)
+	tr, got := deafTray(t, &deaf)
+	tr.notif[trayOptBatch] = true
+	tr.notif[trayOptQuietWhenDeaf] = true
+
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+	deaf.Store(false)
+	tr.batch.flush()
+	if c := got(); len(c) != 0 {
+		t.Errorf("the dropped notice was queued after all: %v", c)
+	}
+}
+
+// TestTrayReloadConfigPicksUpAnotherProcessesWrite: `ts6tray settings` writes
+// the file and sends `reload`; the menu has to follow.
+func TestTrayReloadConfigPicksUpAnotherProcessesWrite(t *testing.T) {
+	tr := newTestTray(t)
+	tr.notif = trayReadNotify(trayConfigPath())
+	if tr.clickTarget() != "mic" || tr.notif["mute"] {
+		t.Fatal("unexpected starting point")
+	}
+
+	// Another process (the TUI) changes the file underneath us.
+	path := trayConfigPath()
+	if err := trayWriteClick(path, "speaker"); err != nil {
+		t.Fatal(err)
+	}
+	n := trayReadNotify(path)
+	n["mute"] = true
+	n["self"] = true
+	if err := trayWriteNotify(path, n); err != nil {
+		t.Fatal(err)
+	}
+
+	before := tr.revision
+	if err := tr.reloadConfig(); err != nil {
+		t.Fatalf("reloadConfig: %v", err)
+	}
+	if tr.clickTarget() != "speaker" {
+		t.Errorf("click = %q, want speaker", tr.clickTarget())
+	}
+	if !tr.notifyEnabled(noticeMute) || !tr.notifyEnabled(noticeSelf) {
+		t.Error("the reloaded switches did not take")
+	}
+	if tr.revision == before {
+		t.Error("the revision did not move, so the host never redraws the menu")
+	}
+	row, ok := tr.rowByID(trayNotifyID["self"])
+	if !ok || !row.checked {
+		t.Errorf("the 'My own changes' checkmark is %+v, want checked", row)
+	}
+}
+
+// TestConfigNewKeysRoundTrip: the three switches added after the first release
+// survive a write/read cycle under their documented keys, and a config file
+// written before they existed still loads with them off.
+func TestConfigNewKeysRoundTrip(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path := trayConfigPath()
+
+	// A file from the previous version: every old key present, none of the new.
+	old := "click=speaker\nnotify.batch=off\nnotify.channelMsg=on\nnotify.connLost=off\n" +
+		"notify.joinleave=on\nnotify.kicked=on\nnotify.moved=on\nnotify.mute=on\n" +
+		"notify.poke=on\nnotify.privateMsg=on\nnotify.replace=off\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := trayReadNotify(path)
+	for _, key := range []string{"self", "serverMsg", trayOptQuietWhenDeaf} {
+		if got[key] {
+			t.Errorf("%s came out of an old config as on, want off", key)
+		}
+	}
+	if !got["mute"] || got[trayOptBatch] || got["connLost"] {
+		t.Errorf("the old keys did not survive: %v", got)
+	}
+
+	// Turn the new ones on and read them back.
+	got["self"] = true
+	got["serverMsg"] = true
+	got[trayOptQuietWhenDeaf] = true
+	if err := trayWriteNotify(path, got); err != nil {
+		t.Fatal(err)
+	}
+	body := readFile(t, path)
+	for _, want := range []string{"notify.self=on", "notify.serverMsg=on", "notify.quietWhenDeaf=on"} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("the file is missing %q:\n%s", want, body)
+		}
+	}
+	if again := trayReadNotify(path); !reflect.DeepEqual(again, got) {
+		t.Errorf("round trip: wrote %v, read %v", got, again)
+	}
+	if trayReadClick(path) != "speaker" {
+		t.Error("the click target was lost")
+	}
+
+	// Every switch the UI shows has a key in the file, and no two share one.
+	seen := map[string]bool{}
+	for _, g := range trayNotifySwitches {
+		if seen[g.key] {
+			t.Errorf("duplicate config key %q", g.key)
+		}
+		seen[g.key] = true
+		if !strings.Contains(body, "notify."+g.key+"=") {
+			t.Errorf("%s was not written", g.key)
+		}
+	}
+	// …and a menu id of its own.
+	ids := map[int32]string{}
+	for _, g := range trayNotifySwitches {
+		id, ok := trayNotifyID[g.key]
+		if !ok {
+			t.Errorf("%s has no menu id", g.key)
+		}
+		if other, dup := ids[id]; dup {
+			t.Errorf("%s and %s share menu id %d", g.key, other, id)
+		}
+		ids[id] = g.key
 	}
 }

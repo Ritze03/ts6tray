@@ -43,7 +43,7 @@ const (
 	ipcMaxRequest = 4096
 )
 
-const ipcUsage = "usage:\n  ts6tray mic|speaker toggle|mute|unmute\n  ts6tray status"
+const ipcUsage = "usage:\n  ts6tray mic|speaker toggle|mute|unmute\n  ts6tray status\n  ts6tray reload"
 
 // ipcNotRunning is what the CLI prints when nothing answers the socket.
 const ipcNotRunning = "ts6tray daemon not running — start it with `ts6tray --daemon`"
@@ -65,7 +65,9 @@ func SocketPath() string {
 
 // ServeIPC listens on path and serves requests until ctx is done, then removes
 // the socket. It returns an error if another daemon is already listening.
-func ServeIPC(ctx context.Context, b ipcBackend, path string) error {
+// reload, when not nil, re-reads the config file into the running tray; it is
+// what the "reload" request calls. A nil reload makes that request an error.
+func ServeIPC(ctx context.Context, b ipcBackend, path string, reload func() error) error {
 	ln, err := ipcListen(path)
 	if err != nil {
 		return err
@@ -100,7 +102,7 @@ func ServeIPC(ctx context.Context, b ipcBackend, path string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ipcHandle(b, conn)
+			ipcHandle(b, reload, conn)
 		}()
 	}
 }
@@ -138,7 +140,7 @@ func ipcListen(path string) (net.Listener, error) {
 }
 
 // ipcHandle serves exactly one request on conn and closes it.
-func ipcHandle(b ipcBackend, conn net.Conn) {
+func ipcHandle(b ipcBackend, reload func() error, conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(ipcTimeout))
 
@@ -161,7 +163,7 @@ func ipcHandle(b ipcBackend, conn net.Conn) {
 		io.Copy(io.Discard, conn)
 		return
 	}
-	ok, body := ipcDispatch(b, strings.Fields(line))
+	ok, body := ipcDispatch(b, reload, strings.Fields(line))
 	ipcReply(conn, ok, body)
 }
 
@@ -179,7 +181,7 @@ func ipcReply(conn net.Conn, ok bool, body string) {
 
 // ipcDispatch validates the request words and runs the command. The socket is
 // a trust boundary, so nothing here trusts the client's spelling.
-func ipcDispatch(b ipcBackend, words []string) (ok bool, body string) {
+func ipcDispatch(b ipcBackend, reload func() error, words []string) (ok bool, body string) {
 	if len(words) == 0 {
 		return false, "empty request\n" + ipcUsage
 	}
@@ -189,6 +191,17 @@ func ipcDispatch(b ipcBackend, words []string) (ok bool, body string) {
 			return false, "status takes no arguments"
 		}
 		return true, ipcStatusText(b)
+	case "reload":
+		if len(words) != 1 {
+			return false, "reload takes no arguments"
+		}
+		if reload == nil {
+			return false, "this daemon cannot reload its settings"
+		}
+		if err := reload(); err != nil {
+			return false, err.Error()
+		}
+		return true, "settings reloaded"
 	case "mic", "speaker":
 		if len(words) != 2 {
 			return false, "bad request: " + strings.Join(words, " ") + "\n" + ipcUsage
@@ -346,7 +359,7 @@ func RunIPCClient(path string, args []string, out io.Writer) int {
 func ipcValidArgs(args []string) bool {
 	switch len(args) {
 	case 1:
-		return args[0] == "status"
+		return args[0] == "status" || args[0] == "reload"
 	case 2:
 		switch args[0] {
 		case "mic", "speaker":
