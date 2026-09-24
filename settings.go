@@ -57,7 +57,7 @@ const (
 // the user can get to TeamSpeak's assignment dialog. settingsTick is how often
 // the countdown advances. Both are variables so tests can shorten them.
 var (
-	settingsBindSeconds = 10
+	settingsBindSeconds = 5
 	settingsTick        = time.Second
 )
 
@@ -167,7 +167,7 @@ func settingsRender(s settingsState) string {
 
 // settingsCountdown is the live instruction line under a running countdown. It
 // spells out the whole path through TeamSpeak's settings, because the user has
-// ten seconds to walk it and no time to go looking.
+// five seconds to walk it and no time to go looking.
 func settingsCountdown(target string, left int) string {
 	what := "Microphone"
 	if target == "speaker" {

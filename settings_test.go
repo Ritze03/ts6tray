@@ -283,7 +283,7 @@ func TestSettingsReadKey(t *testing.T) {
 // --- the key-binding helper -------------------------------------------------
 
 // TestSettingsBindStartsACountdown: activating a bind row puts the target and
-// the full ten seconds into the state, and writes nothing.
+// the full five seconds into the state, and writes nothing.
 func TestSettingsBindStartsACountdown(t *testing.T) {
 	for i, want := range []string{"mic", "speaker"} {
 		s := testState(t)
@@ -382,7 +382,7 @@ func TestSettingsBindCancels(t *testing.T) {
 }
 
 // TestSettingsBindRestartsOnASecondActivation: aiming at the other key while
-// one is counting down retargets it and starts the ten seconds over.
+// one is counting down retargets it and starts the five seconds over.
 func TestSettingsBindRestartsOnASecondActivation(t *testing.T) {
 	s := testState(t)
 	s, _ = settingsPress(s, "toggle")
@@ -419,7 +419,7 @@ func TestSettingsRenderShowsTheCountdown(t *testing.T) {
 	}
 
 	out := plain(settingsRender(s))
-	want := "Switch to TeamSpeak → Settings → Key Bindings → Microphone: Toggle → Choose … pressing in 7 s"
+	want := "Switch to TeamSpeak → Settings → Key Bindings → Microphone: Toggle → Choose … pressing in 2 s"
 	if !strings.Contains(out, want) {
 		t.Errorf("render is missing %q:\n%s", want, out)
 	}

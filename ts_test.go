@@ -474,7 +474,7 @@ func TestSetMuteAckOnlyIsNotBound(t *testing.T) {
 	// The steps have to point at the terminal UI, which is where the bind
 	// helper lives now — the tray menu no longer has a Settings submenu.
 	for _, want := range []string{"ts6tray settings", "Key Bindings", "Toggle speaker mute",
-		"Bind speaker key", "10 seconds", ButtonSpeaker} {
+		"Bind speaker key", "5 seconds", ButtonSpeaker} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error message missing %q: %v", want, err)
 		}

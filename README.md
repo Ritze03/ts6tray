@@ -28,14 +28,14 @@ so on. GNOME needs the *AppIndicator and KStatusNotifierItem Support* extension.
 ts6tray mutes by pressing its own virtual keys, so TeamSpeak has to learn them once. Until
 then, every mute command reports "not bound" along with these steps.
 
-1. Run `ts6tray settings` and activate **Bind microphone key** (space or enter). A 10 s
+1. Run `ts6tray settings` and activate **Bind microphone key** (space or enter). A 5 s
    countdown starts, with the steps below on screen. Esc or `q` cancels it.
 2. Switch to TeamSpeak → **Settings → Key Bindings**. Set **Microphone** to **Toggle**, then
    click **Choose** at the end of that line. TeamSpeak now waits for a key.
 3. When the countdown ends ts6tray presses its key and TeamSpeak records it.
 4. Repeat with **Bind speaker key** and the **Speaker** line.
 
-The 10 s delay exists because TeamSpeak stops recording a hotkey as soon as its window loses
+The 5 s delay exists because TeamSpeak stops recording a hotkey as soon as its window loses
 focus — you need both windows in that order.
 
 ## Usage
