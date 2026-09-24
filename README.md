@@ -101,8 +101,8 @@ With more than one server connected the title says which server a notice came fr
 
 Every notification carries ts6tray's own icon, unpacked once to
 `~/.cache/ts6tray/ts6tray.svg` — except a mute notification, which shows the person's *new*
-state (speakers or microphone under a red slash, or the plain microphone when they are
-unmuted again), and an arrival or a departure, which is a green person for someone joining
+state (speakers or microphone under a red slash, or the empty talking indicator — the same
+blue ring the tray shows when it is quiet — when they are unmuted again), and an arrival or a departure, which is a green person for someone joining
 and a red one for someone leaving, being kicked or dropping out; those icons are unpacked
 beside it in `~/.cache/ts6tray/notify/`. A grouped notification lists its events numbered
 with the newest first and takes that newest event's icon. They are all sent under the name

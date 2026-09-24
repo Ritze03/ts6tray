@@ -111,7 +111,8 @@ const (
 
 // noticeIcon maps a client's {inputMuted, outputMuted} onto the artwork, with
 // the tray's own precedence: speakers first, because a muted speaker makes a
-// muted mic beside the point, then the mic, then the plain unmuted mic.
+// muted mic beside the point, then the mic, then the empty talking indicator
+// the tray shows when nothing is muted.
 func noticeIcon(m [2]bool) notifyIcon {
 	switch {
 	case m[1]:

@@ -657,7 +657,7 @@ func TestRosterMuteIcons(t *testing.T) {
 		})
 	}
 
-	// A full unmute from both-muted ends at the plain unmuted mic: the icon
+	// A full unmute from both-muted ends at the empty talking indicator: the icon
 	// says "nothing is muted any more". It is one notice, the speakers': the
 	// mic was not worth reporting while they could not hear.
 	r := newRoster()
