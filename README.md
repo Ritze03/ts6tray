@@ -46,7 +46,8 @@ again on its own.
 Then [bind the mute keys](#bind-the-mute-keys-one-time) once, and you are done.
 
 `ts6tray install` copies the binary to `~/.local/bin` and asks whether to autostart it (XDG
-autostart, a Hyprland `exec-once` line, or nothing). It writes nothing before you answer.
+autostart, a printed command for manual autostart, or nothing). It writes nothing before you
+answer.
 
 ## Dependencies
 

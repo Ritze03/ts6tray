@@ -44,7 +44,7 @@ func RunInstall(in io.Reader, out io.Writer) int {
 	fmt.Fprintf(out, "Install ts6tray to %s.\n", target)
 	fmt.Fprintln(out, "Start the tray automatically at login?")
 	fmt.Fprintf(out, "  1) XDG autostart (%s) — GNOME, KDE, most desktops\n", filepath.Join(installConfigDir(), "autostart", "ts6tray.desktop"))
-	fmt.Fprintf(out, "  2) Hyprland exec-once line in %s\n", filepath.Join(installConfigDir(), "hypr", "hyprland.conf"))
+	fmt.Fprintln(out, "  2) Manual autostart — print the command for your own autostart setup")
 	fmt.Fprintln(out, "  3) No autorun")
 
 	choice, ok := installAsk(in, out)
@@ -74,20 +74,9 @@ func RunInstall(in io.Reader, out io.Writer) int {
 		}
 		written = append(written, path)
 	case "2":
-		path, changed, line, err := installHyprland(target)
-		if err != nil {
-			fmt.Fprintf(out, "hyprland config failed: %v\n", err)
-			return 1
-		}
-		switch {
-		case changed:
-			written = append(written, path)
-		case path == "":
-			fmt.Fprintf(out, "\n%s does not exist; add this line to your Hyprland config yourself:\n  %s\n",
-				filepath.Join(installConfigDir(), "hypr", "hyprland.conf"), line)
-		default:
-			fmt.Fprintf(out, "\n%s already starts ts6tray --daemon; left unchanged.\n", path)
-		}
+		fmt.Fprintln(out, "\nAdd this command to whatever starts programs at login on your system")
+		fmt.Fprintln(out, "(compositor config, desktop session settings, a systemd user unit, …):")
+		fmt.Fprintf(out, "  %s --daemon\n", target)
 	}
 
 	fmt.Fprintln(out)
@@ -190,45 +179,6 @@ func installDesktop(target string) (string, error) {
 		return "", err
 	}
 	return path, nil
-}
-
-// installHyprland appends an exec-once line to hyprland.conf if it exists and
-// does not already start ts6tray. It never creates the file. When the file is
-// missing, path is "" and the caller should print line instead.
-func installHyprland(target string) (path string, changed bool, line string, err error) {
-	line = fmt.Sprintf("exec-once = %s --daemon", target)
-	conf := filepath.Join(installConfigDir(), "hypr", "hyprland.conf")
-
-	data, rerr := os.ReadFile(conf)
-	if rerr != nil {
-		if os.IsNotExist(rerr) {
-			return "", false, line, nil
-		}
-		return "", false, line, rerr
-	}
-	for _, l := range strings.Split(string(data), "\n") {
-		// A commented-out line is not an autostart, so treat it as absent.
-		if strings.HasPrefix(strings.TrimSpace(l), "#") {
-			continue
-		}
-		if strings.Contains(l, "ts6tray --daemon") {
-			return conf, false, line, nil
-		}
-	}
-
-	f, oerr := os.OpenFile(conf, os.O_WRONLY|os.O_APPEND, 0o644)
-	if oerr != nil {
-		return "", false, line, oerr
-	}
-	defer f.Close()
-	prefix := "\n"
-	if len(data) == 0 || strings.HasSuffix(string(data), "\n") {
-		prefix = ""
-	}
-	if _, werr := f.WriteString(prefix + line + "\n"); werr != nil {
-		return "", false, line, werr
-	}
-	return conf, true, line, nil
 }
 
 // installOnPath reports whether dir is listed in $PATH.
