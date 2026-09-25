@@ -103,9 +103,10 @@ func TestRosterReplaysRun5(t *testing.T) {
 }
 
 // TestRosterReplayWithDefaultFilterMatchesTheTray applies the shipped defaults
-// to the same replay: the mute flips, the channel chatter and — because
-// TeamSpeak already pops those up itself — the poke and the private message
-// disappear, which is the quiet menu the user gets out of the box.
+// to the same replay: the join, leave, moved and mute notices stay, while the
+// channel chatter and — because TeamSpeak already pops those up itself — the
+// poke and the private message disappear, which is the menu the user gets out
+// of the box.
 func TestRosterReplayWithDefaultFilterMatchesTheTray(t *testing.T) {
 	r := run5Roster(t)
 	all := applyAll(r, captureLines(t, "events_run5_channel.jsonl"))
@@ -125,6 +126,14 @@ func TestRosterReplayWithDefaultFilterMatchesTheTray(t *testing.T) {
 		"join | UserA joined your channel",
 		"moved | Ritze moved RitzeTest out of your channel",
 		"moved | Ritze moved RitzeTest into your channel",
+		"mute | RitzeTest unmuted their speakers",
+		"mute | RitzeTest unmuted their microphone",
+		"mute | RitzeTest muted their speakers",
+		"mute | RitzeTest unmuted their speakers",
+		"mute | RitzeTest muted their microphone",
+		"mute | RitzeTest unmuted their microphone",
+		"mute | RitzeTest muted their microphone",
+		"mute | RitzeTest muted their speakers",
 	}
 	wantNotices(t, got, want)
 }

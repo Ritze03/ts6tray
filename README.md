@@ -13,15 +13,18 @@ hides the tray icon entirely; the icon comes back when TeamSpeak does.
 ## Quick start
 
 ```sh
-# 1. dependencies (see below) — Arch: pacman -S go   Fedora: dnf install golang
+# 1. get the source
+git clone https://github.com/Ritze03/ts6tray && cd ts6tray
 
-# 2. build: one static binary, no cgo (on Fedora prefix GOTOOLCHAIN=auto, see below)
+# 2. dependencies (see below) — Arch: pacman -S go   Fedora: dnf install golang
+
+# 3. build: one static binary, no cgo (on Fedora prefix GOTOOLCHAIN=auto, see below)
 CGO_ENABLED=0 go build -o ts6tray .
 
-# 3. optional: copy to ~/.local/bin and offer autostart
+# 4. optional: copy to ~/.local/bin and offer autostart
 ./ts6tray install
 
-# 4. run
+# 5. run
 ./ts6tray --daemon
 ```
 
