@@ -12,21 +12,31 @@ hides the tray icon entirely; the icon comes back when TeamSpeak does.
 
 ## Quick start
 
-```sh
-# 1. get the source
-git clone https://github.com/Ritze03/ts6tray && cd ts6tray
+1. Install the [dependencies](#dependencies) for your distribution.
+2. Get the source:
 
-# 2. dependencies (see below) — Arch: pacman -S go   Fedora: dnf install golang
+   ```sh
+   git clone https://github.com/Ritze03/ts6tray && cd ts6tray
+   ```
 
-# 3. build: one static binary, no cgo (on Fedora prefix GOTOOLCHAIN=auto, see below)
-CGO_ENABLED=0 go build -o ts6tray .
+3. Build — one static binary, no cgo (on Fedora use the command from its
+   [dependencies](#dependencies) section instead):
 
-# 4. optional: copy to ~/.local/bin and offer autostart
-./ts6tray install
+   ```sh
+   CGO_ENABLED=0 go build -o ts6tray .
+   ```
 
-# 5. run
-./ts6tray --daemon
-```
+4. Optional: copy to `~/.local/bin` and offer autostart:
+
+   ```sh
+   ./ts6tray install
+   ```
+
+5. Run:
+
+   ```sh
+   ./ts6tray --daemon
+   ```
 
 In TeamSpeak, **Settings → Remote Apps**: enable it and check the port is **5899** (the
 default). On the first run TeamSpeak shows a permission request for "ts6tray" — accept it. The
@@ -40,36 +50,63 @@ autostart, a Hyprland `exec-once` line, or nothing). It writes nothing before yo
 
 ## Dependencies
 
-| What | Needed for | Arch Linux | Fedora |
-| --- | --- | --- | --- |
-| Go 1.27 or newer | building only | `pacman -S go` | `dnf install golang`, plus `GOTOOLCHAIN=auto` (see below) |
-| TeamSpeak 6 client | everything | from teamspeak.com | from teamspeak.com |
-| D-Bus session bus | tray icon, notifications | in every desktop session (`dbus`) | in every desktop session (`dbus`) |
-| A StatusNotifierItem host | drawing the icon | KDE, `waybar` (`tray` module), DankMaterialShell, … | KDE, `waybar`, …; GNOME needs the AppIndicator extension |
-| A notification server | the notifications | KDE and GNOME have one; on a bare compositor `mako`, `dunst`, `swaync` | same |
+Go 1.27 or newer to build, and at runtime the **TeamSpeak 6 client** with *Remote Apps*
+enabled, a D-Bus session bus, a StatusNotifierItem host to draw the icon and a notification
+server to show the notices. The TeamSpeak client itself comes from
+[teamspeak.com](https://teamspeak.com) on every distribution — no distribution package is
+assumed (ts6tray was probed against 6.0.0beta4.1).
+
+<details>
+<summary><b>Arch Linux / CachyOS</b></summary>
+
+```sh
+sudo pacman -S --needed go git
+
+# GNOME only: the tray host extension
+sudo pacman -S gnome-shell-extension-appindicator
+```
+
+Arch's `go` is already 1.27 or newer, so the build command from the Quick start works as it
+stands.
+
+</details>
+
+<details>
+<summary><b>Fedora</b></summary>
+
+```sh
+sudo dnf install golang git
+
+# GNOME only: the tray host extension
+sudo dnf install gnome-shell-extension-appindicator
+```
+
+Fedora's `golang` is older than `go.mod` requires — 1.25 on Fedora 42, 1.26 on 44 — and it
+ships `GOTOOLCHAIN=local`, so the plain build stops with
+`go.mod requires go >= 1.27 (running go 1.26.8; GOTOOLCHAIN=local)`. Ask for the toolchain
+explicitly and Go fetches the right one itself:
+
+```sh
+CGO_ENABLED=0 GOTOOLCHAIN=auto go build -o ts6tray .
+```
+
+</details>
 
 Notes:
 
 - **Build**: the build is `CGO_ENABLED=0`, so there is no C toolchain, no headers and no
-  shared libraries to install — just Go. The result is one static binary.
-- **Go version**: `go.mod` requires Go 1.27. Arch already has it. Fedora does not — its
-  `golang` package is 1.25 on Fedora 42 and 1.26 on 44 — and it also ships
-  `GOTOOLCHAIN=local`, so the plain build stops with
-  `go.mod requires go >= 1.27 (running go 1.26.8; GOTOOLCHAIN=local)`. Ask for the toolchain
-  explicitly and Go fetches the right one itself:
-
-  ```sh
-  CGO_ENABLED=0 GOTOOLCHAIN=auto go build -o ts6tray .
-  ```
-
-  Elsewhere `GOTOOLCHAIN=auto` is already the default and the plain build does this by
-  itself; `GOTOOLCHAIN=local` forbids the download, and then you need a newer Go installed.
-- **TeamSpeak 6**: no distribution package is assumed — install the client however you like
-  (it was probed against 6.0.0beta4.1). It must have **Remote Apps** enabled, and the first
-  connection needs an approval click in the client.
-- **Tray host**: on GNOME install the *AppIndicator and KStatusNotifierItem Support*
-  extension, often packaged as `gnome-shell-extension-appindicator`. Without a session bus at
-  all (SSH, a bare TTY) the daemon still runs — you just get no icon, and the CLI still works.
+  shared libraries to install — just Go. The result is one static binary. Outside Fedora
+  `GOTOOLCHAIN=auto` is already the default, and the plain build fetches a newer Go by itself;
+  `GOTOOLCHAIN=local` forbids the download, and then you need a newer Go installed.
+- **TeamSpeak 6**: it must have **Remote Apps** enabled, and the first connection needs an
+  approval click in the client.
+- **Tray host**: KDE has one, and so do `waybar` (its `tray` module) and DankMaterialShell;
+  GNOME needs the *AppIndicator and KStatusNotifierItem Support* extension, packaged as
+  `gnome-shell-extension-appindicator` above.
+- **Notification server**: KDE and GNOME bring one; on a bare compositor install `mako`,
+  `dunst` or `swaync`.
+- **No session bus** at all (SSH, a bare TTY): the daemon still runs — you just get no icon,
+  and the CLI still works.
 
 ## Bind the mute keys (one-time)
 
