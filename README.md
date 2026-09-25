@@ -15,7 +15,7 @@ hides the tray icon entirely; the icon comes back when TeamSpeak does.
 ```sh
 # 1. dependencies (see below) — Arch: pacman -S go   Fedora: dnf install golang
 
-# 2. build: one static binary, no cgo
+# 2. build: one static binary, no cgo (on Fedora prefix GOTOOLCHAIN=auto, see below)
 CGO_ENABLED=0 go build -o ts6tray .
 
 # 3. optional: copy to ~/.local/bin and offer autostart
@@ -39,7 +39,7 @@ autostart, a Hyprland `exec-once` line, or nothing). It writes nothing before yo
 
 | What | Needed for | Arch Linux | Fedora |
 | --- | --- | --- | --- |
-| Go 1.27 or newer | building only | `pacman -S go` | `dnf install golang` |
+| Go 1.27 or newer | building only | `pacman -S go` | `dnf install golang`, plus `GOTOOLCHAIN=auto` (see below) |
 | TeamSpeak 6 client | everything | from teamspeak.com | from teamspeak.com |
 | D-Bus session bus | tray icon, notifications | in every desktop session (`dbus`) | in every desktop session (`dbus`) |
 | A StatusNotifierItem host | drawing the icon | KDE, `waybar` (`tray` module), DankMaterialShell, … | KDE, `waybar`, …; GNOME needs the AppIndicator extension |
@@ -49,9 +49,18 @@ Notes:
 
 - **Build**: the build is `CGO_ENABLED=0`, so there is no C toolchain, no headers and no
   shared libraries to install — just Go. The result is one static binary.
-- **Go version**: `go.mod` requires Go 1.27. If your distribution's Go is older, the default
-  `GOTOOLCHAIN=auto` downloads the right toolchain for you; set `GOTOOLCHAIN=local` to forbid
-  that and install a newer Go yourself instead.
+- **Go version**: `go.mod` requires Go 1.27. Arch already has it. Fedora does not — its
+  `golang` package is 1.25 on Fedora 42 and 1.26 on 44 — and it also ships
+  `GOTOOLCHAIN=local`, so the plain build stops with
+  `go.mod requires go >= 1.27 (running go 1.26.8; GOTOOLCHAIN=local)`. Ask for the toolchain
+  explicitly and Go fetches the right one itself:
+
+  ```sh
+  CGO_ENABLED=0 GOTOOLCHAIN=auto go build -o ts6tray .
+  ```
+
+  Elsewhere `GOTOOLCHAIN=auto` is already the default and the plain build does this by
+  itself; `GOTOOLCHAIN=local` forbids the download, and then you need a newer Go installed.
 - **TeamSpeak 6**: no distribution package is assumed — install the client however you like
   (it was probed against 6.0.0beta4.1). It must have **Remote Apps** enabled, and the first
   connection needs an approval click in the client.
