@@ -1312,6 +1312,34 @@ func TestTrayReplaceWindowStops(t *testing.T) {
 	}
 }
 
+// TestTrayReplaceWindowRunsFromTheFirstShow: a replace rides on the popup
+// already up and does not restart its expiry, so a steady stream of events
+// must not keep the window alive for ever. It is measured from the first show.
+func TestTrayReplaceWindowRunsFromTheFirstShow(t *testing.T) {
+	tr, got := newNotifyTray(t, time.Hour, time.Hour)
+	tr.notif[trayOptBatch] = false
+	tr.timeout = "5"
+	now := time.Now()
+	tr.now = func() time.Time { return now }
+
+	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
+	now = now.Add(3 * time.Second) // 0.6 of the window: the popup is still up
+	tr.onNotice(notice{kind: noticeJoin, title: "B joined your channel"})
+	now = now.Add(3 * time.Second) // 1.2 windows after the first show: gone
+	tr.onNotice(notice{kind: noticeJoin, title: "C joined your channel"})
+
+	calls := got()
+	if len(calls) != 3 {
+		t.Fatalf("%d notifications, want 3", len(calls))
+	}
+	if calls[1].replaces != 1 {
+		t.Errorf("inside the window: replaces_id = %d, want the first notification's id 1", calls[1].replaces)
+	}
+	if calls[2].replaces != 0 {
+		t.Errorf("a replace extended the window: replaces_id = %d, want a fresh notification (0)", calls[2].replaces)
+	}
+}
+
 // TestTrayNotificationClosedResetsReplace: once the server says our
 // notification is gone, the next event opens a new one.
 func TestTrayNotificationClosedResetsReplace(t *testing.T) {

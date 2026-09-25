@@ -578,7 +578,7 @@ type tray struct {
 	iconPath        string                // cached app icon, "" when it could not be written
 	notifyIcons     map[notifyIcon]string // unpacked notification SVGs, by icon
 	lastEventID     uint32                // id of the last event notification, for replaces_id
-	lastEventAt     time.Time             // when it was sent, for the replace window
+	lastEventAt     time.Time             // when the notification on screen was first shown, for the replace window
 	click           string                // left-click target: "mic" or "speaker"
 	notif           map[string]bool       // notification switches, by config key
 	timeout         string                // notify.timeout: how long a notification stays up
@@ -1345,14 +1345,16 @@ func (t *tray) sendNotify(replaces uint32, title, body, icon string) (uint32, er
 // the replace window below; 5 s is what the common servers use.
 const trayDefaultExpiry = 5 * time.Second
 
-// trayReplaceWindow is how long after sending a notification it is still safe
-// to replace it. 0 means "no limit".
+// trayReplaceWindow is how long after a notification was first shown it is
+// still safe to replace it. 0 means "no limit".
 //
 // Replacing a notification the server has already taken off screen is the bug
 // this exists for: Quickshell/DMS applies such a Notify in place, silently
 // editing an invisible row in its notification centre, and emits no
 // NotificationClosed at expiry to tell us. So once the notification can no
 // longer be on screen we stop claiming to replace it and send a fresh one.
+// A replace does not extend the server's expiry, so the window runs from when
+// the notification was first shown, not from the last send.
 // "never" is the exception: that notification really does stay up.
 func trayReplaceWindow(timeout string) time.Duration {
 	switch timeout {
@@ -1398,6 +1400,7 @@ func (t *tray) notifyEvent(title, body string, ic notifyIcon) {
 	if err != nil && replaces != 0 {
 		// The id we tried to replace may be the reason it failed. Drop it and
 		// try once more as a new notification, so the news still gets through.
+		replaces = 0
 		id, err = t.sendNotify(0, title, body, t.iconFor(ic))
 	}
 	if err != nil {
@@ -1406,7 +1409,12 @@ func (t *tray) notifyEvent(title, body string, ic notifyIcon) {
 
 	t.mu.Lock()
 	t.lastEventID = id
-	t.lastEventAt = t.nowFn()
+	if replaces == 0 {
+		// A fresh notification: the popup is on screen from now. A replace
+		// rides on the one already up and does not restart its expiry, so the
+		// window has to keep running from that first show.
+		t.lastEventAt = t.nowFn()
+	}
 	t.mu.Unlock()
 }
 
