@@ -6,7 +6,7 @@ A tray icon, mute control and desktop notifications for the TeamSpeak 6 client o
 (X11 and Wayland). It talks to TeamSpeak's local Remote Apps WebSocket API, publishes a
 StatusNotifierItem, and mutes by pressing its own virtual keys.
 
-It runs as a background daemon and stays out of the way — around 60 MB of RAM in testing and
+It runs as a background daemon and stays out of the way — around 18 MB of RAM in testing and
 practically no CPU. It notices by itself when TeamSpeak isn't running or isn't connected and
 hides the tray icon entirely; the icon comes back when TeamSpeak does.
 
