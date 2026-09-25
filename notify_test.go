@@ -73,7 +73,7 @@ func wantNotices(t *testing.T, got []notice, want []string) {
 // snapshot time and leaves and rejoins it in the middle of the RitzeTest
 // sequence, and the eight mute flips arrive interleaved with nothing else. The
 // mute and channel-message notices come out of the roster unconditionally —
-// they are off by default, but that filtering happens in the tray, not here.
+// whether they are shown is the tray's decision, not the roster's.
 func TestRosterReplaysRun5(t *testing.T) {
 	r := run5Roster(t)
 	got := applyAll(r, captureLines(t, "events_run5_channel.jsonl"))

@@ -136,7 +136,7 @@ person. Switch them on and off in `ts6tray settings`; the choice is saved in
 | Someone joins or leaves my channel | `joinleave` | on |
 | Someone is moved in or out (and by whom) | `moved` | on |
 | Someone is kicked or times out | `kicked` | on |
-| Someone in my channel mutes or unmutes | `mute` | **off** |
+| Someone in my channel mutes or unmutes | `mute` | on |
 | Private messages | `privateMsg` | **off** |
 | Pokes | `poke` | **off** |
 | Channel messages | `channelMsg` | **off** |
@@ -144,8 +144,8 @@ person. Switch them on and off in `ts6tray settings`; the choice is saved in
 | My own changes | `self` | **off** |
 | Server messages | `serverMsg` | **off** |
 
-Messages and pokes are off because TeamSpeak already pops up its own notification for them;
-mute changes and channel chatter are off because they are noisy. **My own changes** — you
+Messages, pokes and channel chatter are off because TeamSpeak already pops up its own
+notification for them. **My own changes** — you
 muting or unmuting your own microphone or speakers, and being moved or kicked by someone
 else — is off because the tray icon already says all of that; turn it on if you would rather
 read it. **Server messages** are server-wide broadcasts. Someone whose speakers are muted
@@ -173,10 +173,10 @@ Below the list are the delivery options, saved the same way:
 
 | Option | Key | What it does |
 | --- | --- | --- |
-| Group bursts (0.5 s) | `notify.batch` | Waits half a second, and half a second again after each further event, then sends the whole burst as one notification with a numbered line per event, newest first. Five people moved at once is one notification, not five. It gives up waiting after 3 s, and lists at most ten lines — past that the oldest are dropped and counted ("…and 3 more earlier"). |
+| Group bursts (0.5 s) | `notify.batch` | **Off by default**, so every notice arrives on its own as it happens. On, it waits half a second, and half a second again after each further event, then sends the whole burst as one notification with a numbered line per event, newest first. Five people moved at once is one notification, not five. It gives up waiting after 3 s, and lists at most ten lines — past that the oldest are dropped and counted ("…and 3 more earlier"). |
 | Replace previous notification | `notify.replace` | Each new notification takes the place of the last one, so only the newest is on screen. The window it may do that in runs from when the notification was **first shown**, not from the last send — a replacement does not restart the server's expiry. Once that time is up, a fresh notification is sent instead: some servers apply a replacement in place, and would otherwise silently edit a row nobody can see. With the display time set to `never` there is no window, since the notification really does stay up. |
-| Silence while my speakers are muted | `notify.quietWhenDeaf` | **Off by default.** While your speakers are muted on any connected server, event notifications are dropped rather than held back — you muted them to be left alone, and unmuting should not then deliver the backlog. A lost connection still comes through, and so do your own actions (**My own changes**) — muting the speakers silences other people, not the confirmation of what you just did. |
-| Show notifications for | `notify.timeout` | How long one stays on screen: `3`, `5` (the default), `10`, `30` seconds, `never` (until you dismiss it), or `default` to let the notification server decide. |
+| Silence while my speakers are muted | `notify.quietWhenDeaf` | **On by default.** While your speakers are muted on any connected server, event notifications are dropped rather than held back — you muted them to be left alone, and unmuting should not then deliver the backlog. A lost connection still comes through, and so do your own actions (**My own changes**) — muting the speakers silences other people, not the confirmation of what you just did. |
+| Show notifications for | `notify.timeout` | How long one stays on screen: `3` (the default), `5`, `10`, `30` seconds, `never` (until you dismiss it), or `default` to let the notification server decide. |
 
 Kick, ban and timeout wording is best-effort: TeamSpeak has never sent one during a capture,
 so it follows the client's documented event codes rather than an observed message, and a kick

@@ -413,14 +413,14 @@ func readFile(t *testing.T, path string) string {
 // decision, not the D-Bus call.
 func TestTrayOnNoticeRespectsTheSwitches(t *testing.T) {
 	tr := newTestTray(t)
-	for _, k := range []noticeKind{noticeJoin, noticeLeave, noticeMoved, noticeKicked, noticeConnLost} {
+	for _, k := range []noticeKind{noticeJoin, noticeLeave, noticeMoved, noticeKicked, noticeConnLost, noticeMute} {
 		if !tr.notifyEnabled(k) {
 			t.Errorf("%v is off by default, want on", k)
 		}
 	}
 	// TeamSpeak pops up its own notification for messages and pokes, so ours
 	// would only double them.
-	for _, k := range []noticeKind{noticeMute, noticeChannelMsg, noticePrivateMsg, noticePoke} {
+	for _, k := range []noticeKind{noticeChannelMsg, noticePrivateMsg, noticePoke} {
 		if tr.notifyEnabled(k) {
 			t.Errorf("%v is on by default, want off", k)
 		}
@@ -490,6 +490,7 @@ func waitCalls(t *testing.T, got func() []notifyCall, n int) []notifyCall {
 // because titles are plain text but the batched body is markup.
 func TestTrayBatchBurst(t *testing.T) {
 	tr, got := newNotifyTray(t, 40*time.Millisecond, time.Second)
+	tr.notif[trayOptBatch] = true
 	for i := 0; i < 5; i++ {
 		tr.onNotice(notice{kind: noticeMoved, title: "Mo moved <b> into your channel"})
 	}
@@ -530,6 +531,7 @@ func TestTrayBatchSingle(t *testing.T) {
 // so both land in one notification rather than the first going out alone.
 func TestTrayBatchSlidingWindow(t *testing.T) {
 	tr, got := newNotifyTray(t, 60*time.Millisecond, 5*time.Second)
+	tr.notif[trayOptBatch] = true
 	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
 	time.Sleep(30 * time.Millisecond)
 	if c := got(); len(c) != 0 {
@@ -553,6 +555,7 @@ func TestTrayBatchSlidingWindow(t *testing.T) {
 // the cap is measured from the first notice of the batch.
 func TestTrayBatchHardCap(t *testing.T) {
 	tr, got := newNotifyTray(t, 50*time.Millisecond, 120*time.Millisecond)
+	tr.notif[trayOptBatch] = true
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -620,25 +623,26 @@ func TestTrayNotifyOptionsRoundTrip(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := trayConfigPath()
 
-	if got := trayReadNotify(path); !got[trayOptBatch] || !got[trayOptReplace] {
-		t.Errorf("defaults: batch=%v replace=%v, want both on", got[trayOptBatch], got[trayOptReplace])
+	if got := trayReadNotify(path); got[trayOptBatch] || !got[trayOptReplace] {
+		t.Errorf("defaults: batch=%v replace=%v, want batch off and replace on", got[trayOptBatch], got[trayOptReplace])
 	}
 
 	m := trayNotifyDefaults()
-	m[trayOptBatch] = false
+	m[trayOptBatch] = true
 	if err := trayWriteNotify(path, m); err != nil {
 		t.Fatal(err)
 	}
 	raw := readFile(t, path)
-	if !strings.Contains(raw, "notify.batch=off") || !strings.Contains(raw, "notify.replace=on") {
+	if !strings.Contains(raw, "notify.batch=on") || !strings.Contains(raw, "notify.replace=on") {
 		t.Errorf("config file:\n%s", raw)
 	}
 	got := trayReadNotify(path)
-	if got[trayOptBatch] || !got[trayOptReplace] {
+	if !got[trayOptBatch] || !got[trayOptReplace] {
 		t.Errorf("read back: batch=%v replace=%v", got[trayOptBatch], got[trayOptReplace])
 	}
 
 	// notifyOptOn reads whatever is in the state, switches and defaults alike.
+	m[trayOptBatch] = false
 	m[trayOptReplace] = false
 	tr := &tray{notif: m}
 	if tr.notifyOptOn(trayOptBatch) || tr.notifyOptOn(trayOptReplace) {
@@ -1041,15 +1045,13 @@ func TestTrayQuietWhenDeafPassesOurOwnActions(t *testing.T) {
 	}
 }
 
-// TestTrayQuietWhenDeafOffPassesEverything: the option is off by default, so a
-// muted speaker on its own changes nothing.
+// TestTrayQuietWhenDeafOffPassesEverything: with the option off a muted
+// speaker on its own changes nothing.
 func TestTrayQuietWhenDeafOffPassesEverything(t *testing.T) {
 	var deaf atomic.Bool
 	deaf.Store(true)
 	tr, got := deafTray(t, &deaf)
-	if tr.notif[trayOptQuietWhenDeaf] {
-		t.Fatal("quietWhenDeaf defaults to on, want off")
-	}
+	tr.notif[trayOptQuietWhenDeaf] = false
 	tr.onNotice(notice{kind: noticeJoin, title: "A joined your channel"})
 	if c := got(); len(c) != 1 {
 		t.Errorf("calls = %v, want the notice through", c)
@@ -1078,7 +1080,7 @@ func TestTrayQuietWhenDeafDropsRatherThanQueues(t *testing.T) {
 func TestTrayReloadConfigPicksUpAnotherProcessesWrite(t *testing.T) {
 	tr := newTestTray(t)
 	tr.notif = trayReadNotify(trayConfigPath())
-	if tr.clickTarget() != "mic" || tr.notif["mute"] {
+	if tr.clickTarget() != "mic" || tr.notif["self"] || !tr.notif["mute"] {
 		t.Fatal("unexpected starting point")
 	}
 
@@ -1088,7 +1090,7 @@ func TestTrayReloadConfigPicksUpAnotherProcessesWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := trayReadNotify(path)
-	n["mute"] = true
+	n["mute"] = false
 	n["self"] = true
 	if err := trayWriteNotify(path, n); err != nil {
 		t.Fatal(err)
@@ -1101,7 +1103,7 @@ func TestTrayReloadConfigPicksUpAnotherProcessesWrite(t *testing.T) {
 	if tr.clickTarget() != "speaker" {
 		t.Errorf("click = %q, want speaker", tr.clickTarget())
 	}
-	if !tr.notifyEnabled(noticeMute) || !tr.notifyEnabled(noticeSelf) {
+	if tr.notifyEnabled(noticeMute) || !tr.notifyEnabled(noticeSelf) {
 		t.Error("the reloaded switches did not take")
 	}
 	// The menu shows none of this any more, so it must not churn either.
@@ -1122,7 +1124,7 @@ func TestTrayReloadConfigPicksUpAnotherProcessesWrite(t *testing.T) {
 
 // TestConfigNewKeysRoundTrip: the three switches added after the first release
 // survive a write/read cycle under their documented keys, and a config file
-// written before they existed still loads with them off.
+// written before they existed still loads with them at their defaults.
 func TestConfigNewKeysRoundTrip(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	path := trayConfigPath()
@@ -1138,24 +1140,27 @@ func TestConfigNewKeysRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := trayReadNotify(path)
-	for _, key := range []string{"self", "serverMsg", trayOptQuietWhenDeaf} {
+	for _, key := range []string{"self", "serverMsg"} {
 		if got[key] {
 			t.Errorf("%s came out of an old config as on, want off", key)
 		}
+	}
+	if !got[trayOptQuietWhenDeaf] {
+		t.Errorf("%s came out of an old config as off, want on", trayOptQuietWhenDeaf)
 	}
 	if !got["mute"] || got[trayOptBatch] || got["connLost"] {
 		t.Errorf("the old keys did not survive: %v", got)
 	}
 
-	// Turn the new ones on and read them back.
+	// Flip the new ones away from their defaults and read them back.
 	got["self"] = true
 	got["serverMsg"] = true
-	got[trayOptQuietWhenDeaf] = true
+	got[trayOptQuietWhenDeaf] = false
 	if err := trayWriteNotify(path, got); err != nil {
 		t.Fatal(err)
 	}
 	body := readFile(t, path)
-	for _, want := range []string{"notify.self=on", "notify.serverMsg=on", "notify.quietWhenDeaf=on"} {
+	for _, want := range []string{"notify.self=on", "notify.serverMsg=on", "notify.quietWhenDeaf=off"} {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("the file is missing %q:\n%s", want, body)
 		}
@@ -1184,7 +1189,7 @@ func TestConfigNewKeysRoundTrip(t *testing.T) {
 
 // TestTrayNotifyTimeout: the config value becomes Notify's expire_timeout. The
 // spec's -1 is "server decides" and 0 is "never expires"; everything else is
-// milliseconds, and an unset or nonsense file means five seconds.
+// milliseconds, and an unset or nonsense file means three seconds.
 func TestTrayNotifyTimeout(t *testing.T) {
 	for _, c := range []struct {
 		value string
@@ -1196,8 +1201,8 @@ func TestTrayNotifyTimeout(t *testing.T) {
 		{"5", 5000},
 		{"10", 10000},
 		{"30", 30000},
-		{"", 5000},
-		{"trumpet", 5000},
+		{"", 3000},
+		{"trumpet", 3000},
 	} {
 		if got := trayTimeoutMillis(c.value); got != c.want {
 			t.Errorf("trayTimeoutMillis(%q) = %d, want %d", c.value, got, c.want)

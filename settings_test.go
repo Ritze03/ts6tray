@@ -41,7 +41,7 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		"Left-click on the tray icon   ‹ microphone ›",
 		"\nNotifications\n",
 		"\nDelivery\n",
-		"  Show notifications for   ‹ 5 s ›",
+		"  Show notifications for   ‹ 3 s ›",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render is missing %q:\n%s", want, out)
@@ -56,8 +56,10 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 	// The defaults the user asked for, read straight off the screen.
 	if !strings.Contains(out, "[ ] My own changes") ||
 		!strings.Contains(out, "[ ] Server messages") ||
-		!strings.Contains(out, "[ ] Silence while my speakers are muted") {
-		t.Errorf("the three new switches are not off by default:\n%s", out)
+		!strings.Contains(out, "[x] Silence while my speakers are muted") ||
+		!strings.Contains(out, "[x] Someone in my channel mutes or unmutes") ||
+		!strings.Contains(out, "[ ] Group bursts (0.5 s)") {
+		t.Errorf("the switch defaults are not the shipped ones:\n%s", out)
 	}
 }
 
@@ -488,7 +490,14 @@ func TestSettingsTimeoutRowCycles(t *testing.T) {
 
 	// Walk the whole cycle and watch the label follow.
 	path := trayConfigPath()
-	for _, want := range append(append([]string{}, trayNotifyTimeouts[3:]...), trayNotifyTimeouts[:3]...) {
+	start := 0
+	for i, v := range trayNotifyTimeouts {
+		if v == trayNotifyTimeoutDef {
+			start = i + 1
+			break
+		}
+	}
+	for _, want := range append(append([]string{}, trayNotifyTimeouts[start:]...), trayNotifyTimeouts[:start]...) {
 		s, _ = settingsPress(s, "toggle")
 		if s.timeout != want {
 			t.Fatalf("cycled to %q, want %q", s.timeout, want)

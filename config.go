@@ -103,14 +103,13 @@ type trayNotifyGroup struct {
 }
 
 // trayNotifyGroups is the menu order, the config keys and the defaults, all in
-// one place. Messages, pokes, channel messages and other people's mute changes
-// are off by default: TeamSpeak already pops up its own notification for the
-// first three, and the fourth is constant chatter.
+// one place. Private messages, pokes and channel messages are off by default:
+// TeamSpeak already pops up its own notification for those three.
 var trayNotifyGroups = []trayNotifyGroup{
 	{"joinleave", "Someone joins or leaves my channel", true, []noticeKind{noticeJoin, noticeLeave}},
 	{"moved", "Someone is moved in or out", true, []noticeKind{noticeMoved}},
 	{"kicked", "Someone is kicked or times out", true, []noticeKind{noticeKicked}},
-	{"mute", "Someone in my channel mutes or unmutes", false, []noticeKind{noticeMute}},
+	{"mute", "Someone in my channel mutes or unmutes", true, []noticeKind{noticeMute}},
 	{"privateMsg", "Private messages", false, []noticeKind{noticePrivateMsg}},
 	{"poke", "Pokes", false, []noticeKind{noticePoke}},
 	{"channelMsg", "Channel messages", false, []noticeKind{noticeChannelMsg}},
@@ -133,9 +132,12 @@ const (
 )
 
 var trayNotifyOptions = []trayNotifyGroup{
-	{trayOptBatch, "Group bursts (0.5 s)", true, nil},
+	// Group bursts is off by default: every notice arrives on its own, as it
+	// happens. Silence while deaf is on: muting the speakers is how people ask
+	// to be left alone, so the notices go quiet with them.
+	{trayOptBatch, "Group bursts (0.5 s)", false, nil},
 	{trayOptReplace, "Replace previous notification", true, nil},
-	{trayOptQuietWhenDeaf, "Silence while my speakers are muted", false, nil},
+	{trayOptQuietWhenDeaf, "Silence while my speakers are muted", true, nil},
 }
 
 // trayNotifySwitches is every switch in the submenu, kinds first: what the
@@ -203,10 +205,11 @@ const trayOptTimeout = "timeout"
 // leave the notification up until it is dismissed, and a number is seconds.
 var trayNotifyTimeouts = []string{"default", "3", "5", "10", "30", "never"}
 
-// trayNotifyTimeoutDef is what a config file that predates the setting gets:
-// five seconds, because the servers' own default leaves ts6tray's notices up
-// for far longer than anyone wants.
-const trayNotifyTimeoutDef = "5"
+// trayNotifyTimeoutDef is the display time for anything the config does not
+// settle: a file that predates the setting, a missing key, an unrecognised
+// value. Three seconds, because the servers' own default leaves ts6tray's
+// notices up for far longer than anyone wants.
+const trayNotifyTimeoutDef = "3"
 
 // trayNotifyTimeoutLabel renders one value for the UI.
 func trayNotifyTimeoutLabel(v string) string {
