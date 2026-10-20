@@ -28,6 +28,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -46,6 +47,7 @@ const (
 const (
 	settingsHint       = "↑↓/jk move · space/enter toggle · q quit"
 	settingsBindHint   = "Esc or q cancels"
+	settingsEditHint   = "type, then enter saves · Esc cancels"
 	settingsNoDaemon   = "daemon not running — changes apply on next start"
 	settingsReloadedOK = "daemon: reloaded ✓"
 	settingsNotATTY    = "ts6tray settings needs a terminal; run it in one, or edit ~/.config/ts6tray/config"
@@ -74,7 +76,7 @@ type settingsState struct {
 	click   string
 	notif   map[string]bool
 	timeout string     // one of trayNotifyTimeouts
-	alarm   alarmWatch // alarm.nick and alarm.channel, shown in the alarm row
+	alarm   alarmWatch // alarm.nick and alarm.channel, shown in the Alarms rows
 	cursor  int
 	status  string
 
@@ -83,6 +85,12 @@ type settingsState struct {
 	// whole helper stays inside the pure state machine.
 	bind string
 	left int
+
+	// editing is the config key of the text row being typed into — the
+	// alarm's name or channel — or "" for none, and edit is what has been
+	// typed so far. Enter stores it; Esc throws it away.
+	editing string
+	edit    string
 }
 
 // settingsRowClick is the index of the left-click row: straight after the bind
@@ -90,14 +98,22 @@ type settingsState struct {
 var settingsRowClick = len(settingsBindRows)
 
 // settingsRowKeys names the selectable rows in screen order. Only the switch
-// rows have a config key of their own; the rest are named after what they do.
+// rows and the alarm's name row have a config key of their own; the rest are
+// named after what they do.
 func settingsRowKeys() []string {
-	keys := make([]string, 0, len(settingsBindRows)+2+len(trayNotifySwitches))
+	keys := make([]string, 0, len(settingsBindRows)+3+len(trayNotifySwitches))
 	for _, b := range settingsBindRows {
 		keys = append(keys, "bind."+b.target)
 	}
 	keys = append(keys, "click")
-	for _, g := range trayNotifySwitches {
+	for _, g := range trayNotifyGroups {
+		keys = append(keys, g.key)
+	}
+	for _, g := range trayAlarmGroups {
+		keys = append(keys, g.key)
+	}
+	keys = append(keys, trayAlarmNickKey, trayAlarmChannelKey)
+	for _, g := range trayNotifyOptions {
 		keys = append(keys, g.key)
 	}
 	return append(keys, trayOptTimeout)
@@ -132,7 +148,10 @@ func settingsRender(s settingsState) string {
 	}
 
 	hint := settingsHint
-	if s.bind != "" {
+	switch {
+	case s.editing != "":
+		hint = settingsEditHint
+	case s.bind != "":
 		hint = settingsBindHint
 	}
 	fmt.Fprintf(&b, "%-37s%s\n\n", "ts6tray settings", hint)
@@ -157,6 +176,8 @@ func settingsRender(s settingsState) string {
 	for _, g := range trayAlarmGroups {
 		line("  " + settingsBox(s.notif[g.key]) + " " + trayAlarmLabel(s.alarm))
 	}
+	line("  " + settingsTextRow(s, trayAlarmNickKey))
+	line("  " + settingsTextRow(s, trayAlarmChannelKey))
 	b.WriteString("\nDelivery\n")
 	for _, o := range trayNotifyOptions {
 		line("  " + settingsBox(s.notif[o.key]) + " " + o.label)
@@ -169,6 +190,23 @@ func settingsRender(s settingsState) string {
 	}
 	b.WriteString("\n" + status + "\n")
 	return b.String()
+}
+
+// settingsTextRow is one of the alarm's two text rows: what is being typed,
+// with a cursor mark since the terminal's own is hidden, or the stored value
+// and how to change it.
+func settingsTextRow(s settingsState, key string) string {
+	label, value := "Name:    ", s.alarm.nick
+	if key == trayAlarmChannelKey {
+		label, value = "Channel: ", s.alarm.channel
+	}
+	switch {
+	case s.editing == key:
+		return label + s.edit + "_"
+	case value == "":
+		return label + "not set   (enter to type one)"
+	}
+	return label + value + "   (enter to change)"
 }
 
 // settingsCountdown is the live instruction line under a running countdown. It
@@ -205,9 +243,15 @@ const (
 )
 
 // settingsPress applies one event to the state. key is one of the names
-// settingsReadKey produces — up, down, left, right, toggle, quit, none — or
-// "tick", which the main loop sends once a second while a countdown runs.
+// settingsReadKey produces — up, down, left, right, enter, esc, backspace,
+// quit, none, or char:<c> for a typed character — one of the commands
+// settingsKeyName turns them into, or "tick", which the main loop sends once a
+// second while a countdown runs.
 func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
+	if s.editing != "" && key != "tick" {
+		return settingsEditKey(s, key)
+	}
+	key = settingsKeyName(key)
 	rows := len(settingsRowKeys())
 	switch key {
 	case "tick":
@@ -225,8 +269,8 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 		}
 		return s, settingsActPressMic
 	case "quit":
-		// Esc and q both arrive here. While a countdown runs they stop it;
-		// pressing q again then quits, as it would have the first time.
+		// Esc, q and Ctrl-C all arrive here. While a countdown runs they stop
+		// it; pressing q again then quits, as it would have the first time.
 		if s.bind != "" {
 			s.bind, s.left, s.status = "", 0, settingsCancelled
 			return s, settingsActNone
@@ -262,7 +306,71 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			s.status = ""
 			return s, settingsActNone
 		}
+		switch key := settingsRowKeys()[s.cursor]; key {
+		case trayAlarmNickKey, trayAlarmChannelKey:
+			// Start from the stored value, so a typo is one backspace away.
+			s.editing, s.status = key, ""
+			s.edit = s.alarm.nick
+			if key == trayAlarmChannelKey {
+				s.edit = s.alarm.channel
+			}
+			return s, settingsActNone
+		}
 		return settingsToggle(s, 1), settingsActWrite
+	}
+	return s, settingsActNone
+}
+
+// settingsKeyName turns what the terminal sent into a command, outside the
+// name editor: there the letters are text, here they are shortcuts.
+func settingsKeyName(key string) string {
+	switch key {
+	case "char:j":
+		return "down"
+	case "char:k":
+		return "up"
+	case "char:h":
+		return "left"
+	case "char:l":
+		return "right"
+	case "char: ", "enter":
+		return "toggle"
+	case "char:q", "char:Q", "esc":
+		return "quit"
+	}
+	return key
+}
+
+// settingsEditKey applies one key to the text being typed. Enter stores it,
+// trimmed the way the config file would trim it, and asks for a write. An
+// empty name watches for nobody; an empty channel goes back to the default,
+// since "any channel at all" is not what an alarm for the lobby means. Esc or
+// Ctrl-C leaves the stored value as it was. Every other key that is not text
+// is ignored, so a stray arrow cannot drop what has been typed.
+func settingsEditKey(s settingsState, key string) (settingsState, settingsAct) {
+	switch {
+	case key == "enter":
+		v := strings.TrimSpace(s.edit)
+		if s.editing == trayAlarmChannelKey {
+			if v == "" {
+				v = trayAlarmChannelDef
+			}
+			s.alarm.channel = v
+		} else {
+			s.alarm.nick = v
+		}
+		s.editing, s.edit = "", ""
+		return s, settingsActWrite
+	case key == "esc" || key == "quit":
+		s.editing, s.edit = "", ""
+	case key == "backspace":
+		if r := []rune(s.edit); len(r) > 0 {
+			s.edit = string(r[:len(r)-1])
+		}
+	case strings.HasPrefix(key, "char:"):
+		if utf8.RuneCountInString(s.edit) < noticeMaxNick {
+			s.edit += strings.TrimPrefix(key, "char:")
+		}
 	}
 	return s, settingsActNone
 }
@@ -315,6 +423,10 @@ func settingsSave(path string, s settingsState, reload func() error) settingsSta
 		return s
 	}
 	if err := trayWriteTimeout(path, s.timeout); err != nil {
+		s.status = "could not save: " + err.Error()
+		return s
+	}
+	if err := trayWriteAlarm(path, s.alarm); err != nil {
 		s.status = "could not save: " + err.Error()
 		return s
 	}
@@ -373,28 +485,25 @@ func settingsReload() error {
 // --- the terminal ----------------------------------------------------------
 
 // settingsReadKey turns the next keypress into a name. Arrow keys arrive as a
-// three-byte escape sequence; a lone Esc (nothing buffered behind it) quits.
+// three-byte escape sequence; a lone Esc (nothing buffered behind it) is "esc".
+// Every printable character, letters with shortcuts included, comes back as
+// char:<c>: whether "j" means down or the letter j depends on whether the name
+// is being typed, which only settingsPress knows.
 func settingsReadKey(r *bufio.Reader) (string, error) {
 	b, err := r.ReadByte()
 	if err != nil {
 		return "", err
 	}
 	switch b {
-	case 'q', 'Q', 0x03, 0x04: // q, Ctrl-C, Ctrl-D
+	case 0x03, 0x04: // Ctrl-C, Ctrl-D
 		return "quit", nil
-	case 'j':
-		return "down", nil
-	case 'k':
-		return "up", nil
-	case 'h':
-		return "left", nil
-	case 'l':
-		return "right", nil
-	case ' ', '\r', '\n':
-		return "toggle", nil
+	case '\r', '\n':
+		return "enter", nil
+	case 0x7f, 0x08: // what Backspace sends, depending on the terminal
+		return "backspace", nil
 	case 0x1b:
 		if r.Buffered() < 2 {
-			return "quit", nil
+			return "esc", nil
 		}
 		intro, _ := r.ReadByte()
 		final, _ := r.ReadByte()
@@ -411,8 +520,20 @@ func settingsReadKey(r *bufio.Reader) (string, error) {
 		case 'D':
 			return "left", nil
 		}
+		return "none", nil
 	}
-	return "none", nil
+	if b < 0x20 {
+		return "none", nil
+	}
+	if b >= utf8.RuneSelf {
+		_ = r.UnreadByte()
+		c, _, err := r.ReadRune()
+		if err != nil || c == utf8.RuneError {
+			return "none", nil
+		}
+		return "char:" + string(c), nil
+	}
+	return "char:" + string(rune(b)), nil
 }
 
 // RunSettings is the `ts6tray settings` subcommand. It returns the process exit

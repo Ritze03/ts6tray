@@ -29,7 +29,7 @@ const (
 	alarmGapMs     = 40    // of silence after each high/low pair
 	alarmCycles    = 6     // high/low pairs: about 2.4 s in all
 	alarmFadeMs    = 4     // at each tone edge, against clicks
-	alarmAmplitude = 0.5   // of full scale: half, loud enough to notice without startling
+	alarmAmplitude = 0.25  // of full scale: a quarter, loud enough to notice without startling
 )
 
 // alarmPlayers are tried in order; the first one that is installed and plays

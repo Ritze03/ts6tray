@@ -125,11 +125,12 @@ var trayNotifyGroups = []trayNotifyGroup{
 }
 
 // trayAlarmGroups are the switches of the Alarms section, between the
-// notifications and the delivery options. The alarm is on by default: a user
-// who sets alarm.nick wants to hear about it. The TUI replaces the label with
-// the live one from trayAlarmLabel, which names who and where.
+// notifications and the delivery options. The alarm is off by default, with
+// no name to watch for: it is a siren, and only the user can say for whom.
+// The TUI replaces the label with the live one from trayAlarmLabel, which
+// names who and where.
 var trayAlarmGroups = []trayNotifyGroup{
-	{trayAlarmKey, "The watched user enters the lobby", true, []noticeKind{noticeAlarm}},
+	{trayAlarmKey, "The watched user enters the lobby", false, []noticeKind{noticeAlarm}},
 }
 
 // trayNotifyOptions are the delivery switches at the bottom of the same
@@ -280,19 +281,19 @@ func trayTimeoutMillis(v string) int32 {
 
 // --- the alarm ----------------------------------------------------------------
 
-// The alarm has an on/off switch among the notifications (notify.alarm) and
-// two text keys of its own, which the TUI shows but does not edit:
+// The alarm has an on/off switch in the Alarms section (notify.alarm) and two
+// text keys of its own, both typed in the TUI's Alarms section:
 //
-//	alarm.nick=Nille      whose arrival sounds it, the whole nickname
-//	alarm.channel=Lobby   in any channel whose name contains this
+//	alarm.nick=<nickname>  whose arrival sounds it, the whole nickname
+//	alarm.channel=Lobby    in any channel whose name contains this
 //
-// Both compare case-insensitively. A key that is missing falls back to its
-// default; one set to nothing switches the alarm off as surely as the switch.
+// Both compare case-insensitively. There is no default nickname, so out of
+// the box the alarm watches for nobody. The channel defaults to Lobby; set to
+// nothing, it switches the alarm off as surely as the switch does.
 const (
 	trayAlarmKey        = "alarm"
 	trayAlarmNickKey    = "alarm.nick"
 	trayAlarmChannelKey = "alarm.channel"
-	trayAlarmNickDef    = "Nille"
 	trayAlarmChannelDef = "Lobby"
 )
 
@@ -300,21 +301,30 @@ const (
 // that one is read with the rest of the notification switches.
 func trayReadAlarm(path string) alarmWatch {
 	kv := trayReadConfig(path)
-	w := alarmWatch{nick: trayAlarmNickDef, channel: trayAlarmChannelDef}
-	if v, ok := kv[trayAlarmNickKey]; ok {
-		w.nick = v
-	}
+	w := alarmWatch{nick: kv[trayAlarmNickKey], channel: trayAlarmChannelDef}
 	if v, ok := kv[trayAlarmChannelKey]; ok {
 		w.channel = v
 	}
 	return w
 }
 
+// trayWriteAlarm persists who the alarm listens for, leaving every other key
+// alone. Both keys are written as they stand, an empty name included.
+func trayWriteAlarm(path string, w alarmWatch) error {
+	kv := trayReadConfig(path)
+	kv[trayAlarmNickKey] = w.nick
+	kv[trayAlarmChannelKey] = w.channel
+	return trayWriteConfig(path, kv)
+}
+
 // trayAlarmLabel is the switch's row in the TUI's Alarms section, naming who
-// and where.
+// and where, or what still has to be set.
 func trayAlarmLabel(w alarmWatch) string {
-	if !w.active() {
-		return "Nobody (set " + trayAlarmNickKey + " and " + trayAlarmChannelKey + " in the config)"
+	switch {
+	case w.nick == "":
+		return "Nobody yet (set a name below)"
+	case w.channel == "":
+		return "Nowhere yet (set a channel below)"
 	}
 	return fmt.Sprintf("%s joins the %s", w.nick, w.channel)
 }

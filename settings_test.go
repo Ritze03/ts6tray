@@ -7,6 +7,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -43,6 +44,9 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		"\nAlarms\n",
 		"\nDelivery\n",
 		"  Show notifications for   ‹ 3 s ›",
+		"\nAlarms\n  [ ] Nobody yet (set a name below)\n" +
+			"  Name:    not set   (enter to type one)\n" +
+			"  Channel: Lobby   (enter to change)\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render is missing %q:\n%s", want, out)
@@ -64,7 +68,7 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		!strings.Contains(out, "[x] Silence while my speakers are muted") ||
 		!strings.Contains(out, "[x] Someone in my channel mutes or unmutes") ||
 		!strings.Contains(out, "[ ] Group bursts (0.5 s)") ||
-		!strings.Contains(out, `[x] Nille joins the Lobby`) {
+		!strings.Contains(out, "[ ] Nobody yet (set a name below)") {
 		t.Errorf("the switch defaults are not the shipped ones:\n%s", out)
 	}
 }
@@ -265,17 +269,18 @@ func TestSettingsSaveStatusLines(t *testing.T) {
 	}
 }
 
-// TestSettingsReadKey: the byte a terminal sends becomes the name the pure
-// handler understands.
+// TestSettingsReadKey: the bytes a terminal sends become the names the pure
+// handler understands. Letters stay letters here; which of them are shortcuts
+// is settingsPress's call, since while a name is typed none of them are.
 func TestSettingsReadKey(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"j", "down"}, {"k", "up"}, {"h", "left"}, {"l", "right"},
-		{" ", "toggle"}, {"\r", "toggle"}, {"\n", "toggle"},
-		{"q", "quit"}, {"Q", "quit"}, {"\x03", "quit"}, {"\x04", "quit"},
+		{"j", "char:j"}, {"q", "char:q"}, {" ", "char: "}, {"é", "char:é"},
+		{"\r", "enter"}, {"\n", "enter"}, {"\x7f", "backspace"}, {"\x08", "backspace"},
+		{"\x03", "quit"}, {"\x04", "quit"},
 		{"\x1b[A", "up"}, {"\x1b[B", "down"}, {"\x1b[C", "right"}, {"\x1b[D", "left"},
 		{"\x1bOA", "up"},
-		{"\x1b", "quit"}, // a bare Esc with nothing behind it
-		{"z", "none"},
+		{"\x1b", "esc"}, // a bare Esc with nothing behind it
+		{"\x01", "none"},
 		{"\x1b[Z", "none"}, // shift-tab: known shape, no meaning here
 	} {
 		got, err := settingsReadKey(bufioReader(tc.in))
@@ -285,6 +290,140 @@ func TestSettingsReadKey(t *testing.T) {
 	}
 	if _, err := settingsReadKey(bufioReader("")); err == nil {
 		t.Error("a closed stdin did not report an error")
+	}
+}
+
+// TestSettingsShortcuts: outside the name editor the letters, space, enter and
+// Esc are the commands the hint line advertises.
+func TestSettingsShortcuts(t *testing.T) {
+	for in, want := range map[string]string{
+		"char:j": "down", "char:k": "up", "char:h": "left", "char:l": "right",
+		"char: ": "toggle", "enter": "toggle",
+		"char:q": "quit", "char:Q": "quit", "esc": "quit", "quit": "quit",
+		"char:z": "char:z",
+	} {
+		if got := settingsKeyName(in); got != want {
+			t.Errorf("%q -> %q, want %q", in, got, want)
+		}
+	}
+}
+
+// settingsRowCursor puts the cursor on the row with the given key.
+func settingsRowCursor(t *testing.T, s settingsState, key string) settingsState {
+	t.Helper()
+	s.cursor = slices.Index(settingsRowKeys(), key)
+	if s.cursor < 0 {
+		t.Fatalf("there is no %s row", key)
+	}
+	return s
+}
+
+// TestSettingsTypesTheAlarmName: enter on the name row opens the editor on
+// the stored name, where the shortcut letters and space are text, backspace
+// takes one character back and enter saves the trimmed name to the file,
+// where the daemon's reader finds it.
+func TestSettingsTypesTheAlarmName(t *testing.T) {
+	s := settingsRowCursor(t, testState(t), trayAlarmNickKey)
+	path := trayConfigPath()
+
+	s, act := settingsPress(s, "enter")
+	if s.editing != trayAlarmNickKey || s.edit != "" || act != settingsActNone {
+		t.Fatalf("enter did not open an empty editor: editing %q edit %q act %v", s.editing, s.edit, act)
+	}
+	for _, k := range []string{"char:j", "char:q", "char: ", "char:K", "char:x", "backspace", "down", "char: "} {
+		if s, act = settingsPress(s, k); act != settingsActNone {
+			t.Fatalf("%q acted while typing: %v", k, act)
+		}
+	}
+	if !strings.Contains(plain(settingsRender(s)), "  Name:    jq K _\n") {
+		t.Errorf("the editor does not show what was typed:\n%s", plain(settingsRender(s)))
+	}
+	s, act = settingsPress(s, "enter")
+	if s.editing != "" || act != settingsActWrite || s.alarm.nick != "jq K" {
+		t.Fatalf("enter: editing %q act %v nick %q", s.editing, act, s.alarm.nick)
+	}
+	settingsSave(path, s, nil)
+	if got := trayReadAlarm(path).nick; got != "jq K" {
+		t.Errorf("the file says %q", got)
+	}
+	if out := plain(settingsRender(s)); !strings.Contains(out, "] jq K joins the Lobby\n") ||
+		!strings.Contains(out, "Name:    jq K   (enter to change)") {
+		t.Errorf("the Alarms rows do not show the new name:\n%s", out)
+	}
+
+	// Emptied, the name stays empty in the file — it does not fall back to
+	// the default — and the alarm watches nobody.
+	s, _ = settingsPress(s, "enter")
+	for range 4 {
+		s, _ = settingsPress(s, "backspace")
+	}
+	s, _ = settingsPress(s, "enter")
+	settingsSave(path, s, nil)
+	if v, ok := trayReadConfig(path)[trayAlarmNickKey]; !ok || v != "" || trayReadAlarm(path).active() {
+		t.Errorf("an emptied name reads back as watching someone: %v", trayReadConfig(path))
+	}
+	if out := plain(settingsRender(settingsLoad(path))); !strings.Contains(out, "] Nobody yet (set a name below)\n") {
+		t.Errorf("an emptied name does not show as nobody:\n%s", out)
+	}
+}
+
+// TestSettingsTypesTheAlarmChannel: the channel row edits the same way and
+// lands in alarm.channel; emptied, it goes back to the Lobby default rather
+// than matching every channel.
+func TestSettingsTypesTheAlarmChannel(t *testing.T) {
+	s := settingsRowCursor(t, testState(t), trayAlarmChannelKey)
+	s.alarm.nick = "UserX"
+	path := trayConfigPath()
+
+	s, _ = settingsPress(s, "enter")
+	if s.editing != trayAlarmChannelKey || s.edit != "Lobby" {
+		t.Fatalf("editor: editing %q edit %q, want the channel row starting from Lobby", s.editing, s.edit)
+	}
+	for range 5 {
+		s, _ = settingsPress(s, "backspace")
+	}
+	for _, k := range []string{"char:A", "char:F", "char:K"} {
+		s, _ = settingsPress(s, k)
+	}
+	s, act := settingsPress(s, "enter")
+	if act != settingsActWrite || s.alarm.channel != "AFK" || s.alarm.nick != "UserX" {
+		t.Fatalf("enter: act %v watch %+v", act, s.alarm)
+	}
+	settingsSave(path, s, nil)
+	if got := trayReadAlarm(path); got != (alarmWatch{nick: "UserX", channel: "AFK"}) {
+		t.Errorf("the file gives %+v", got)
+	}
+	if out := plain(settingsRender(s)); !strings.Contains(out, "] UserX joins the AFK\n") ||
+		!strings.Contains(out, "Channel: AFK   (enter to change)") {
+		t.Errorf("the Alarms rows do not show the new channel:\n%s", out)
+	}
+
+	s, _ = settingsPress(s, "enter")
+	for range 3 {
+		s, _ = settingsPress(s, "backspace")
+	}
+	s, _ = settingsPress(s, "enter")
+	settingsSave(path, s, nil)
+	if got := trayReadAlarm(path).channel; got != trayAlarmChannelDef {
+		t.Errorf("an emptied channel reads back as %q, want the default", got)
+	}
+}
+
+// TestSettingsAlarmNameEditCancels: Esc and Ctrl-C leave the stored name as it
+// was and close the editor without quitting or writing.
+func TestSettingsAlarmNameEditCancels(t *testing.T) {
+	for _, key := range []string{"esc", "quit"} {
+		s := settingsRowCursor(t, testState(t), trayAlarmNickKey)
+		s.alarm.nick = "UserX"
+		s, _ = settingsPress(s, "enter")
+		if s.edit != "UserX" {
+			t.Fatalf("the editor starts from %q, want the stored name", s.edit)
+		}
+		s, _ = settingsPress(s, "char:x")
+		s, act := settingsPress(s, key)
+		if s.editing != "" || act != settingsActNone || s.alarm.nick != "UserX" {
+			t.Errorf("%s: editing %q act %v nick %q", key, s.editing, act, s.alarm.nick)
+		}
 	}
 }
 

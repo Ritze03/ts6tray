@@ -1066,6 +1066,7 @@ func TestTrayAlarmSoundsThroughQuiet(t *testing.T) {
 	deaf.Store(true)
 	tr, got := deafTray(t, &deaf)
 	tr.notif[trayOptQuietWhenDeaf] = true
+	tr.notif[trayAlarmKey] = true // off by default
 	var sirens atomic.Int32
 	tr.alarmFn = func() { sirens.Add(1) }
 
