@@ -225,29 +225,28 @@ reason is shown only if one is actually present.
 
 ## Alarm
 
-ts6tray can sound a loud siren when one particular person turns up in the lobby. It is set in
-`~/.config/ts6tray/config`:
+ts6tray can sound a siren when one particular person turns up in the lobby. Nobody is
+watched out of the box: name them in `~/.config/ts6tray/config` and run `ts6tray reload`.
 
 ```ini
-alarm.nick=Nille
+alarm.nick=Alex
 alarm.channel=Lobby
 notify.alarm=on
 ```
 
-`alarm.nick` is whose arrival sounds it (the whole nickname), `alarm.channel` is text the
-channel name must contain, and `notify.alarm` is the on/off switch — the row
-`Nille joins the Lobby` under **Alarms** in `ts6tray settings`.
-
-Those are the defaults, so out of the box it watches for **Nille** in any channel with
-**Lobby** in its name (e.g. `Lobby`, `AFK lobby`), on every connected server. Both compare
-case-insensitively. Change the name or channel by hand and run `ts6tray reload`; the
-settings row shows them but only toggles the switch.
+`alarm.nick` is whose arrival sounds it (the whole nickname; no default). `alarm.channel` is
+text the channel name must contain (default `Lobby`, so `Lobby` and `AFK lobby` both count).
+`notify.alarm` is the on/off switch (default on) — the row under **Alarms** in
+`ts6tray settings`, which reads `Alex joins the Lobby` once a name is set and
+`Nobody yet (set alarm.nick in the config)` until then. Both compare case-insensitively and
+apply on every connected server. The settings row shows the name and channel but only
+toggles the switch.
 
 - It sounds **once per arrival**: when they enter a matching channel, when ts6tray connects
   while they are already there, and when the alarm is switched on while they are there.
   Moving between two matching channels stays quiet; leaving and coming back sounds it again.
   It never sounds for you yourself.
-- Every alarm is also a desktop notification ("Nille is in Lobby"), delivered like the
+- Every alarm is also a desktop notification ("Alex is in Lobby"), delivered like the
   others — grouped or replaced if you chose that.
 - It ignores **Silence while my speakers are muted**: the siren plays through the desktop,
   not TeamSpeak, and is there precisely for when you are not listening to TeamSpeak.

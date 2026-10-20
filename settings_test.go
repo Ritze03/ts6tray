@@ -64,7 +64,7 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		!strings.Contains(out, "[x] Silence while my speakers are muted") ||
 		!strings.Contains(out, "[x] Someone in my channel mutes or unmutes") ||
 		!strings.Contains(out, "[ ] Group bursts (0.5 s)") ||
-		!strings.Contains(out, `[x] Nille joins the Lobby`) {
+		!strings.Contains(out, "[x] Nobody yet (set alarm.nick in the config)") {
 		t.Errorf("the switch defaults are not the shipped ones:\n%s", out)
 	}
 }

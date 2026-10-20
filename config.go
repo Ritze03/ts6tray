@@ -280,19 +280,20 @@ func trayTimeoutMillis(v string) int32 {
 
 // --- the alarm ----------------------------------------------------------------
 
-// The alarm has an on/off switch among the notifications (notify.alarm) and
-// two text keys of its own, which the TUI shows but does not edit:
+// The alarm has an on/off switch in the Alarms section (notify.alarm) and two
+// text keys of its own, which the TUI shows but does not edit:
 //
-//	alarm.nick=Nille      whose arrival sounds it, the whole nickname
-//	alarm.channel=Lobby   in any channel whose name contains this
+//	alarm.nick=<nickname>   whose arrival sounds it, the whole nickname
+//	alarm.channel=Lobby     in any channel whose name contains this
 //
-// Both compare case-insensitively. A key that is missing falls back to its
-// default; one set to nothing switches the alarm off as surely as the switch.
+// Both compare case-insensitively. There is no default nickname — whose
+// arrival matters is the user's to say — so out of the box the alarm watches
+// for nobody. The channel defaults to Lobby; set to nothing, it switches the
+// alarm off as surely as the switch does.
 const (
 	trayAlarmKey        = "alarm"
 	trayAlarmNickKey    = "alarm.nick"
 	trayAlarmChannelKey = "alarm.channel"
-	trayAlarmNickDef    = "Nille"
 	trayAlarmChannelDef = "Lobby"
 )
 
@@ -300,10 +301,7 @@ const (
 // that one is read with the rest of the notification switches.
 func trayReadAlarm(path string) alarmWatch {
 	kv := trayReadConfig(path)
-	w := alarmWatch{nick: trayAlarmNickDef, channel: trayAlarmChannelDef}
-	if v, ok := kv[trayAlarmNickKey]; ok {
-		w.nick = v
-	}
+	w := alarmWatch{nick: kv[trayAlarmNickKey], channel: trayAlarmChannelDef}
 	if v, ok := kv[trayAlarmChannelKey]; ok {
 		w.channel = v
 	}
@@ -311,10 +309,13 @@ func trayReadAlarm(path string) alarmWatch {
 }
 
 // trayAlarmLabel is the switch's row in the TUI's Alarms section, naming who
-// and where.
+// and where, or which key still has to be set.
 func trayAlarmLabel(w alarmWatch) string {
-	if !w.active() {
-		return "Nobody (set " + trayAlarmNickKey + " and " + trayAlarmChannelKey + " in the config)"
+	switch {
+	case w.nick == "":
+		return "Nobody yet (set " + trayAlarmNickKey + " in the config)"
+	case w.channel == "":
+		return "Nowhere yet (set " + trayAlarmChannelKey + " in the config)"
 	}
 	return fmt.Sprintf("%s joins the %s", w.nick, w.channel)
 }
