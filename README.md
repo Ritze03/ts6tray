@@ -32,6 +32,10 @@ hides the tray icon entirely; the icon comes back when TeamSpeak does.
    ./ts6tray install
    ```
 
+   Or do steps 3 and 4 in one go with `./install.sh --install` (needs Go; any Go 1.21 or newer
+   works, it fetches 1.27 itself). `./install.sh --remove` uninstalls again. This is also what
+   [ritz-get](https://github.com/Ritze03/ritz-get) runs.
+
 5. Run:
 
    ```sh
@@ -47,7 +51,23 @@ Then [bind the mute keys](#bind-the-mute-keys-one-time) once, and you are done.
 
 `ts6tray install` copies the binary to `~/.local/bin` and asks whether to autostart it (XDG
 autostart, a printed command for manual autostart, or nothing). It writes nothing before you
-answer.
+answer. Re-running it over an existing install is safe and updates the binary; a tray that is
+already running keeps the old version until you restart it.
+
+For scripts and installers there is `ts6tray install --yes` (or `-y`): it answers every
+question yes (XDG autostart) and never reads stdin.
+
+To remove it again:
+
+```sh
+ts6tray uninstall          # asks first
+ts6tray uninstall --yes    # no questions, never reads stdin
+```
+
+This removes `~/.local/bin/ts6tray`, the autostart entry
+`~/.config/autostart/ts6tray.desktop` (only if it is ts6tray's own) and the icon cache
+`~/.cache/ts6tray`. Your settings and API key in `~/.config/ts6tray` stay. A tray that is
+still running keeps going until you quit it from its menu.
 
 ## Dependencies
 
