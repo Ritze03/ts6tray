@@ -26,7 +26,8 @@ usage:
   ts6tray status                           print the daemon's view of TeamSpeak
   ts6tray reload                           make the running daemon re-read its config
   ts6tray install [--yes]                  copy to ~/.local/bin and offer autorun
-                                           (--yes: no questions, XDG autostart)
+                                           (--yes: no questions; autostart on first
+                                           install, kept as is on update)
   ts6tray uninstall [--yes]                remove the binary, autostart entry and
                                            icon cache; keeps your settings
   ts6tray help                             print this help`

@@ -79,6 +79,55 @@ func TestInstallYesAnswersEverything(t *testing.T) {
 	}
 }
 
+// --yes over an existing install (what every ritz-get update is) keeps the
+// autorun state: no desktop file stays none, an existing one is refreshed.
+func TestInstallYesKeepsAutorunState(t *testing.T) {
+	_, config, _ := installEnvDirs(t)
+	desktop := filepath.Join(config, "autostart", "ts6tray.desktop")
+	var out strings.Builder
+	if code := RunInstall(neverReader{t}, &out, true); code != 0 {
+		t.Fatalf("install %d\n%s", code, out.String())
+	}
+	if err := os.Remove(desktop); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if code := RunInstall(neverReader{t}, &out, true); code != 0 {
+		t.Fatalf("update %d\n%s", code, out.String())
+	}
+	if _, err := os.Stat(desktop); err == nil {
+		t.Error("update re-created the autostart entry")
+	}
+	if !strings.Contains(out.String(), "autorun left off as before") {
+		t.Errorf("no note about autorun:\n%s", out.String())
+	}
+
+	// with an entry present, the update refreshes it
+	if err := os.MkdirAll(filepath.Dir(desktop), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktop, []byte("[Desktop Entry]\nName=ts6tray\nExec=/old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := RunInstall(neverReader{t}, &out, true); code != 0 {
+		t.Fatalf("update %d\n%s", code, out.String())
+	}
+	if got := readTestFile(t, desktop); strings.Contains(got, "/old") {
+		t.Errorf("entry not refreshed:\n%s", got)
+	}
+}
+
+func readTestFile(t *testing.T, p string) string {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
 func TestInstallWithoutYesStillAsks(t *testing.T) {
 	home, _, _ := installEnvDirs(t)
 	var out strings.Builder

@@ -54,8 +54,9 @@ autostart, a printed command for manual autostart, or nothing). It writes nothin
 answer. Re-running it over an existing install is safe and updates the binary; a tray that is
 already running keeps the old version until you restart it.
 
-For scripts and installers there is `ts6tray install --yes` (or `-y`): it answers every
-question yes (XDG autostart) and never reads stdin.
+For scripts and installers there is `ts6tray install --yes` (or `-y`): it never reads stdin.
+A first install answers yes to autostart (XDG); over an existing install it keeps your autorun
+choice, so an update does not switch autostart back on if you had declined it.
 
 To remove it again:
 

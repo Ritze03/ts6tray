@@ -37,8 +37,8 @@ func installParseArgs(args []string) (yes, ok bool) {
 
 // RunInstall installs the running binary to ~/.local/bin/ts6tray and optionally
 // sets up autorun. It asks before writing anything, unless yes is set: then
-// every question is answered yes (XDG autostart is the autorun choice) and in
-// is never read. Returns an exit code.
+// in is never read. A first install answers yes to autostart (XDG); over an
+// existing install the autorun state is kept as it is. Returns an exit code.
 func RunInstall(in io.Reader, out io.Writer, yes bool) int {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -65,7 +65,19 @@ func RunInstall(in io.Reader, out io.Writer, yes bool) int {
 
 	choice, ok := "1", true
 	if yes {
-		fmt.Fprintln(out, installPromptChoice+"1 (--yes)")
+		// First install: autostart. Over an existing install (an update) the
+		// autorun choice is kept: refresh our autostart entry if there is one,
+		// otherwise leave autorun off as it was.
+		if _, err := os.Lstat(target); err == nil {
+			if installDesktopIsOurs() {
+				fmt.Fprintln(out, "Existing install: keeping XDG autostart (--yes).")
+			} else {
+				choice = "3"
+				fmt.Fprintln(out, "Existing install without our autostart entry: autorun left off as before (--yes).")
+			}
+		} else {
+			fmt.Fprintln(out, installPromptChoice+"1 (--yes)")
+		}
 	} else {
 		choice, ok = installAsk(in, out)
 	}
@@ -123,6 +135,12 @@ func installAutostartPath() string {
 	return filepath.Join(installConfigDir(), "autostart", "ts6tray.desktop")
 }
 
+// installDesktopIsOurs reports whether the autostart entry exists and is ours.
+func installDesktopIsOurs() bool {
+	data, err := os.ReadFile(installAutostartPath())
+	return err == nil && strings.Contains(string(data), "Name=ts6tray")
+}
+
 // installCacheDir is the directory trayIconFile writes the icon into (install
 // choice 1 creates it; the daemon adds more files to it). Empty if unknown.
 func installCacheDir() string {
@@ -151,14 +169,11 @@ func RunUninstall(in io.Reader, out io.Writer, yes bool) int {
 	if _, err := os.Lstat(binPath); err == nil {
 		found = append(found, binPath)
 	}
-	desktopOurs := false
-	if data, err := os.ReadFile(desktop); err == nil {
-		if strings.Contains(string(data), "Name=ts6tray") {
-			desktopOurs = true
-			found = append(found, desktop)
-		} else {
-			fmt.Fprintf(out, "Leaving %s alone: it does not look like ours.\n", desktop)
-		}
+	desktopOurs := installDesktopIsOurs()
+	if desktopOurs {
+		found = append(found, desktop)
+	} else if _, err := os.Lstat(desktop); err == nil {
+		fmt.Fprintf(out, "Leaving %s alone: it does not look like ours.\n", desktop)
 	}
 	cache := installCacheDir()
 	if cache != "" {
