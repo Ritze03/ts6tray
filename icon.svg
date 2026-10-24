@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#18294A"/>
+      <stop offset="1" stop-color="#0F1B33"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="256" cy="256" r="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2F6BFF" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#2F6BFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="32" y="32" width="448" height="448" rx="104" fill="url(#tile)"/>
+  <rect x="34" y="34" width="444" height="444" rx="102" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="4"/>
+  <circle cx="256" cy="256" r="190" fill="url(#glow)"/>
+  <!-- the original's blue ring -->
+  <circle cx="256" cy="256" r="128" fill="none" stroke="#2F6BFF" stroke-width="32"/>
+  <!-- microphone: capsule, U holder, stem, base -->
+  <rect x="227.9" y="165.7" width="56.1" height="103.2" rx="28.0" fill="#F3F4F6"/>
+  <path d="M193.2 246.5A62.8 62.8 0 0 0 318.8 246.5" fill="none" stroke="#F3F4F6" stroke-width="32" stroke-linecap="round"/>
+  <path d="M256 309.3V338.5" fill="none" stroke="#F3F4F6" stroke-width="20" stroke-linecap="round"/>
+  <path d="M220.3 339.6H291.7" fill="none" stroke="#F3F4F6" stroke-width="20" stroke-linecap="round"/>
+</svg>
+
