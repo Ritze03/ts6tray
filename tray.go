@@ -14,7 +14,7 @@ package main
 // name prefers it and draws the theme's icon instead of ours (see export()).
 //
 // Everything unexported in this file is either a method or prefixed "tray",
-// because ts.go, ipc.go and install.go share this package.
+// because ts.go and ipc.go share this package.
 
 import (
 	"bytes"
@@ -52,18 +52,16 @@ const (
 
 // --- the app icon file -----------------------------------------------------
 
-// trayIconSVG is our own icon, used both for the notifications we send and for
-// the Icon= line of the autostart entry. A notification server wants a path or
-// a theme name, not bytes, so the embedded file is unpacked into the cache dir
-// once and referenced from there.
+// trayIconSVG is our own icon, used for the notifications we send. A
+// notification server wants a path or a theme name, not bytes, so the embedded
+// file is unpacked into the cache dir once and referenced from there.
 //
 //go:embed assets/ts6tray.svg
 var trayIconSVG []byte
 
 // trayIconFile writes the embedded icon to $XDG_CACHE_HOME/ts6tray/ts6tray.svg
 // and returns its absolute path. It rewrites the file only when the content
-// differs, so a running daemon does not touch it on every start. The daemon and
-// the installer both call it; whichever runs first creates the file.
+// differs, so a running daemon does not touch it on every start.
 func trayIconFile() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {

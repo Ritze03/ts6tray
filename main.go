@@ -25,11 +25,6 @@ usage:
   ts6tray press mic|speaker                press the virtual key once (key binding)
   ts6tray status                           print the daemon's view of TeamSpeak
   ts6tray reload                           make the running daemon re-read its config
-  ts6tray install [--yes]                  copy to ~/.local/bin and offer autorun
-                                           (--yes: no questions; autostart on first
-                                           install, kept as is on update)
-  ts6tray uninstall [--yes]                remove the binary, autostart entry and
-                                           icon cache; keeps your settings
   ts6tray help                             print this help`
 
 // ipcShutdownGrace bounds how long the daemon waits for the IPC server to
@@ -55,16 +50,6 @@ func main() {
 		os.Exit(RunSettings(os.Stdin, os.Stdout))
 	case "mic", "speaker", "press", "status", "reload":
 		os.Exit(RunIPCClient(SocketPath(), os.Args[1:], os.Stdout))
-	case "install", "uninstall":
-		yes, ok := installParseArgs(os.Args[2:])
-		if !ok {
-			fmt.Println(usage)
-			os.Exit(2)
-		}
-		if os.Args[1] == "install" {
-			os.Exit(RunInstall(os.Stdin, os.Stdout, yes))
-		}
-		os.Exit(RunUninstall(os.Stdin, os.Stdout, yes))
 	default:
 		fmt.Println(usage)
 		os.Exit(2)
