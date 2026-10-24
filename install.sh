@@ -47,10 +47,8 @@ EOT
 	mv -f build/.autostart.new build/autostart.desktop
 	a=$cfg/autostart/$NAME.desktop
 	if [ -n "$first" ] || [ -L "$a" ]; then link "$dir/build/autostart.desktop" "$a"; fi
-	if [ -n "$first" ]; then echo "note: start it with: $NAME --daemon"
-	elif command -v pgrep >/dev/null 2>&1 && pgrep -u "$(id -u)" -x "$NAME" >/dev/null 2>&1; then
-		echo "restart: $NAME to use the new version"
-	fi
+	if [ -z "$first" ]; then echo "restart: $NAME to use the new version"
+	else echo "note: start it with: $NAME --daemon"; fi
 }
 
 # Remove exactly what install_files created, with unlink_ours. Must work with the build tools gone.
