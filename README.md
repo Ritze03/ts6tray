@@ -26,15 +26,16 @@ hides the tray icon entirely; the icon comes back when TeamSpeak does.
    CGO_ENABLED=0 go build -o ts6tray .
    ```
 
-4. Optional: copy to `~/.local/bin` and offer autostart:
+4. Optional: put it on your `PATH` and start it at login. With
+   [ritz-get](https://github.com/Ritze03/ritz-get) (the main way, it also builds it for you,
+   so you can skip step 3):
 
    ```sh
-   ./ts6tray install
+   ritz-get install ts6tray
    ```
 
-   Or do steps 3 and 4 in one go with `./install.sh --install` (needs Go; any Go 1.21 or newer
-   works, it fetches 1.27 itself). `./install.sh --remove` uninstalls again. This is also what
-   [ritz-get](https://github.com/Ritze03/ritz-get) runs.
+   Without ritz-get, `./install.sh --install` does steps 3 and 4 in one go (needs Go; any Go
+   1.21 or newer works, it fetches 1.27 itself), and `./install.sh --remove` uninstalls again.
 
 5. Run:
 
@@ -49,26 +50,22 @@ again on its own.
 
 Then [bind the mute keys](#bind-the-mute-keys-one-time) once, and you are done.
 
-`ts6tray install` copies the binary to `~/.local/bin` and asks whether to autostart it (XDG
-autostart, a printed command for manual autostart, or nothing). It writes nothing before you
-answer. Re-running it over an existing install is safe and updates the binary; a tray that is
-already running keeps the old version until you restart it.
-
-For scripts and installers there is `ts6tray install --yes` (or `-y`): it never reads stdin.
-A first install answers yes to autostart (XDG); over an existing install it keeps your autorun
-choice, so an update does not switch autostart back on if you had declined it.
+The install links `~/.local/bin/ts6tray` to the binary in the clone and, on the first install,
+adds an XDG autostart entry (`~/.config/autostart/ts6tray.desktop`, also a link into the
+clone). Re-running it over an existing install is safe and updates the binary; a tray that is
+already running keeps the old version until you restart it. If you delete the autostart entry,
+updates do not bring it back.
 
 To remove it again:
 
 ```sh
-ts6tray uninstall          # asks first
-ts6tray uninstall --yes    # no questions, never reads stdin
+ritz-get remove ts6tray
+./install.sh --remove      # without ritz-get
 ```
 
-This removes `~/.local/bin/ts6tray`, the autostart entry
-`~/.config/autostart/ts6tray.desktop` (only if it is ts6tray's own) and the icon cache
-`~/.cache/ts6tray`. Your settings and API key in `~/.config/ts6tray` stay. A tray that is
-still running keeps going until you quit it from its menu.
+This removes `~/.local/bin/ts6tray` and the autostart entry. Your settings and API key in
+`~/.config/ts6tray` and the icon cache `~/.cache/ts6tray` stay. A tray that is still running
+keeps going until you quit it from its menu.
 
 ## Dependencies
 
