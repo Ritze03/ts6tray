@@ -286,16 +286,55 @@ func TestBadArgsExit2WithoutDialing(t *testing.T) {
 }
 
 func TestDaemonNotRunning(t *testing.T) {
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
 	path := filepath.Join(t.TempDir(), "absent.sock")
+
+	// no unit file: not installed
 	code, out := run(t, path, "status")
 	if code != 1 {
 		t.Fatalf("exit %d, want 1; output: %q", code, out)
 	}
-	if out != ipcNotRunning+"\n" {
-		t.Errorf("output %q, want %q", out, ipcNotRunning+"\n")
+	if out != ipcNotInstalled+"\n" {
+		t.Errorf("output %q, want %q", out, ipcNotInstalled+"\n")
 	}
-	if !strings.Contains(out, "ts6tray --daemon") {
+
+	// with the unit: start it with systemctl
+	unit := filepath.Join(config, "systemd", "user", "ts6tray.service")
+	if err := os.MkdirAll(filepath.Dir(unit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unit, []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, out = run(t, path, "status")
+	if code != 1 || out != ipcNotRunning+"\n" && out != ipcNotInstalled+"\n" {
+		t.Errorf("exit %d output %q, want exit 1 and %q", code, out, ipcNotRunning+"\n")
+	}
+	if !strings.Contains(out, "systemctl --user start ts6tray") {
 		t.Errorf("output %q lacks the start hint", out)
+	}
+}
+
+// `ts6tray daemon` (and the old --daemon spelling) over a live daemon just says
+// so and exits 0, so Restart=on-failure and old autostart entries stay quiet.
+func TestDaemonAlreadyRunningExitsZero(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ts6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	serveAt(t, &fakeBackend{up: true}, SocketPath())
+
+	for _, arg := range []string{"daemon", "--daemon", "-daemon"} {
+		if code := runDaemon([]string{arg}); code != 0 {
+			t.Errorf("runDaemon(%q) = %d, want 0", arg, code)
+		}
+	}
+	// the live daemon is untouched
+	if code, out := run(t, SocketPath(), "status"); code != 0 {
+		t.Errorf("daemon broken: exit %d, %q", code, out)
 	}
 }
 
@@ -548,7 +587,7 @@ func TestDaemonClosesWithoutReplying(t *testing.T) {
 		if d && out != ipcClosedEarly+"\n" {
 			t.Errorf("drain=%v: output %q, want %q", d, out, ipcClosedEarly+"\n")
 		}
-		if !d && out != ipcClosedEarly+"\n" && out != ipcNotRunning+"\n" {
+		if !d && out != ipcClosedEarly+"\n" && out != ipcNotRunning+"\n" && out != ipcNotInstalled+"\n" {
 			t.Errorf("drain=%v: output %q, want the closed-early or not-running message", d, out)
 		}
 	}

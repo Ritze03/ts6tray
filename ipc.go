@@ -50,7 +50,43 @@ const (
 const ipcUsage = "usage:\n  ts6tray mic|speaker toggle|mute|unmute\n  ts6tray press mic|speaker\n  ts6tray status\n  ts6tray reload"
 
 // ipcNotRunning is what the CLI prints when nothing answers the socket.
-const ipcNotRunning = "ts6tray daemon not running — start it with `ts6tray --daemon`"
+const ipcNotRunning = "ts6tray daemon not running — start it with `systemctl --user start ts6tray`"
+
+// ipcNotInstalled is printed instead when the systemd unit file is absent.
+const ipcNotInstalled = "ts6tray is not installed as a service — run ./install.sh from the clone (or start the daemon by hand: `ts6tray daemon`)"
+
+// ipcAlreadyRunning is what `ts6tray daemon` prints, and exits 0, when a
+// daemon already answers the socket.
+const ipcAlreadyRunning = "ts6tray is already running (systemctl --user status ts6tray)"
+
+// ipcService is the systemd user unit that runs the daemon.
+const ipcService = "ts6tray.service"
+
+// ipcNotRunningMsg picks the hint: install first if the unit file is missing.
+func ipcNotRunningMsg() string {
+	cfg := os.Getenv("XDG_CONFIG_HOME")
+	if cfg == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ipcNotRunning
+		}
+		cfg = filepath.Join(home, ".config")
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "systemd", "user", ipcService)); err != nil {
+		return ipcNotInstalled
+	}
+	return ipcNotRunning
+}
+
+// ipcLive reports whether a daemon answers on the socket at path.
+func ipcLive(path string) bool {
+	c, err := net.DialTimeout("unix", path, ipcProbeTimeout)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
 
 // ipcClosedEarly is what the CLI prints when the daemon accepted the
 // connection but closed it without a reply (it was stopped mid-request).
@@ -115,8 +151,7 @@ func ServeIPC(ctx context.Context, b ipcBackend, path string, reload func() erro
 // one.
 func ipcListen(path string) (net.Listener, error) {
 	if _, err := os.Stat(path); err == nil {
-		if c, derr := net.DialTimeout("unix", path, ipcProbeTimeout); derr == nil {
-			c.Close()
+		if ipcLive(path) {
 			return nil, fmt.Errorf("ts6tray already running on %s", path)
 		}
 		// Nobody home: the socket file outlived its daemon.
@@ -352,14 +387,14 @@ func RunIPCClient(path string, args []string, out io.Writer) int {
 
 	conn, err := net.DialTimeout("unix", path, ipcTimeout)
 	if err != nil {
-		fmt.Fprintln(out, ipcNotRunning)
+		fmt.Fprintln(out, ipcNotRunningMsg())
 		return 1
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(ipcTimeout))
 
 	if _, err := io.WriteString(conn, strings.Join(args, " ")+"\n"); err != nil {
-		fmt.Fprintln(out, ipcNotRunning)
+		fmt.Fprintln(out, ipcNotRunningMsg())
 		return 1
 	}
 	resp, _ := io.ReadAll(conn)

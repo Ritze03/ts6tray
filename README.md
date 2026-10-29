@@ -26,7 +26,7 @@ hides the tray icon entirely; the icon comes back when TeamSpeak does.
    CGO_ENABLED=0 go build -o ts6tray .
    ```
 
-4. Optional: put it on your `PATH` and start it at login. With
+4. Optional: put it on your `PATH` and run it as a systemd user service. With
    [ritz-get](https://github.com/Ritze03/ritz-get) (the main way, it also builds it for you,
    so you can skip step 3):
 
@@ -40,8 +40,11 @@ hides the tray icon entirely; the icon comes back when TeamSpeak does.
 5. Run:
 
    ```sh
-   ./ts6tray --daemon
+   ./ts6tray daemon
    ```
+
+   (With the install from step 4 the service already runs it, starting with your graphical
+   session; `ts6tray daemon` on top of a running one just says so and exits.)
 
 In TeamSpeak, **Settings → Remote Apps**: enable it and check the port is **5899** (the
 default). On the first run TeamSpeak shows a permission request for "ts6tray" — accept it. The
@@ -50,11 +53,24 @@ again on its own.
 
 Then [bind the mute keys](#bind-the-mute-keys-one-time) once, and you are done.
 
-The install links `~/.local/bin/ts6tray` to the binary in the clone and, on the first install,
-adds an XDG autostart entry (`~/.config/autostart/ts6tray.desktop`, also a link into the
-clone). Re-running it over an existing install is safe and updates the binary; a tray that is
-already running keeps the old version until you restart it. If you delete the autostart entry,
-updates do not bring it back.
+The install links `~/.local/bin/ts6tray` to the binary in the clone and sets ts6tray up as a
+systemd user service: it writes the unit into `build/ts6tray.service`, links it into
+`~/.config/systemd/user/` and, on the first install, runs `systemctl --user enable --now
+ts6tray`. The service is tied to `graphical-session.target`, so it starts with your desktop
+session and restarts if it crashes. Re-running the install over an existing one is safe: it
+rebuilds and restarts the service, but only if it is enabled. A service you disabled
+(`systemctl --user disable ts6tray`) stays disabled, and a unit link you removed stays removed.
+
+Check on it with `systemctl --user status ts6tray` and `journalctl --user -u ts6tray`. Without a
+systemd user session the install only prints the command to run later.
+
+- **Bare window managers** that never activate `graphical-session.target`: the service will not
+  start on its own. Run `ts6tray daemon` from your own autostart instead.
+- **A different `--addr`**: `systemctl --user edit ts6tray` and override `ExecStart=` there.
+- **Coming from an older install** that used an XDG autostart entry
+  (`~/.config/autostart/ts6tray.desktop`, which ran `ts6tray --daemon`): the next install
+  replaces it with the service. Quit the old tray once so the service can take over. `--daemon`
+  still works as an old spelling of `daemon`.
 
 To remove it again:
 
@@ -63,9 +79,8 @@ ritz-get remove ts6tray
 ./install.sh --remove      # without ritz-get
 ```
 
-This removes `~/.local/bin/ts6tray` and the autostart entry. Your settings and API key in
-`~/.config/ts6tray` and the icon cache `~/.cache/ts6tray` stay. A tray that is still running
-keeps going until you quit it from its menu.
+This stops and disables the service and removes it and `~/.local/bin/ts6tray`. Your settings and
+API key in `~/.config/ts6tray` and the icon cache `~/.cache/ts6tray` stay.
 
 ## Dependencies
 
@@ -178,7 +193,7 @@ ts6tray reload            # re-read the config file
 ts6tray help
 ```
 
-The daemon takes `--addr host:port` if TeamSpeak's Remote Apps port is not the default
+`ts6tray daemon` takes `--addr host:port` if TeamSpeak's Remote Apps port is not the default
 `127.0.0.1:5899`.
 
 Mute commands don't queue — a second one while the first is still in progress reports

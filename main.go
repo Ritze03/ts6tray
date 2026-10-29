@@ -19,7 +19,8 @@ import (
 const usage = `ts6tray — tray icon and mute control for TeamSpeak 6
 
 usage:
-  ts6tray --daemon [--addr host:port]      run the tray daemon (default 127.0.0.1:5899)
+  ts6tray daemon [--addr host:port]        run the tray daemon (systemd user unit ts6tray.service;
+                                           default address 127.0.0.1:5899)
   ts6tray settings                         change the settings in the terminal
   ts6tray mic|speaker toggle|mute|unmute   mute control via the running daemon
   ts6tray press mic|speaker                press the virtual key once (key binding)
@@ -44,7 +45,7 @@ func main() {
 	case "-h", "--help", "help":
 		fmt.Println(usage)
 		os.Exit(0)
-	case "--daemon", "-daemon":
+	case "daemon", "--daemon", "-daemon": // the flag spellings: old autostart entries and scripts
 		os.Exit(runDaemon(os.Args[1:]))
 	case "settings":
 		os.Exit(RunSettings(os.Stdin, os.Stdout))
@@ -57,13 +58,20 @@ func main() {
 }
 
 // runDaemon runs the client, the IPC server and the tray until SIGINT/SIGTERM.
+// args[0] is the subcommand (or its --daemon alias).
 func runDaemon(args []string) int {
-	fs := flag.NewFlagSet("ts6tray --daemon", flag.ContinueOnError)
+	fs := flag.NewFlagSet("ts6tray daemon", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
-	fs.Bool("daemon", false, "run the tray daemon")
 	addr := fs.String("addr", "127.0.0.1:5899", "TeamSpeak Remote Apps address")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args[1:]); err != nil {
 		return 2
+	}
+
+	// Already running (the service, or an old autostart entry): not an error.
+	// Exit 0 so Restart=on-failure does not respawn into the same answer.
+	if ipcLive(SocketPath()) {
+		fmt.Println(ipcAlreadyRunning)
+		return 0
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

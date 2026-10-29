@@ -435,7 +435,7 @@ func settingsSave(path string, s settingsState, reload func() error) settingsSta
 		return s
 	}
 	if err := reload(); err != nil {
-		if strings.Contains(err.Error(), ipcNotRunning) {
+		if strings.Contains(err.Error(), ipcNotRunning) || strings.Contains(err.Error(), ipcNotInstalled) {
 			s.status = settingsNoDaemon
 		} else {
 			s.status = "daemon: " + err.Error()

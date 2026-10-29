@@ -31,29 +31,64 @@ build() {
 	mv -f "build/.$NAME.new" "build/$NAME"
 }
 
-# Tray app started by XDG autostart (pattern P4): the entry holds absolute paths, so it is
-# generated into build/ and linked. Created on first install; later only refreshed if it still exists.
+# The systemd user service (SPEC pattern P5). A tray app needs the session bus, so it is tied to
+# graphical-session.target (the wants link lives there, not in default.target.wants).
+unit=$cfg/systemd/user/$NAME.service
+old=$cfg/autostart/$NAME.desktop      # the XDG autostart entry of earlier installs (ran: ts6tray --daemon)
+has_manager() { systemctl --user show-environment >/dev/null 2>&1; }
+
 install_files() {
 	link "$dir/$TARGET" "$bin/$NAME"
-	cat > build/.autostart.new <<EOT
-[Desktop Entry]
-Type=Application
-Name=$NAME
-Exec=$bin/$NAME --daemon
-Icon=$dir/icon.png
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
+	esc=$(printf '%s' "$dir/$TARGET" | sed 's/%/%%/g')     # '%' is special in unit files
+	cat > build/.unit.new <<EOT
+[Unit]
+Description=ts6tray: TeamSpeak 6 tray and mute control
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart="$esc" daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
 EOT
-	mv -f build/.autostart.new build/autostart.desktop
-	a=$cfg/autostart/$NAME.desktop
-	if [ -n "$first" ] || [ -L "$a" ]; then link "$dir/build/autostart.desktop" "$a"; fi
-	if [ -z "$first" ]; then echo "restart: $NAME to use the new version"
-	else echo "note: start it with: $NAME --daemon"; fi
+	mv -f build/.unit.new "build/$NAME.service"
+	# our old autostart entry still in place on an update means autorun was on: carry that over
+	migrate=
+	if [ -z "$first" ] && [ -L "$old" ]; then case $(readlink "$old") in "$dir"/*) migrate=1 ;; esac; fi
+	# first install, or the unit link is still there: a unit the user disabled and removed stays removed
+	if [ -n "$first" ] || [ -n "$migrate" ] || [ -L "$unit" ]; then link "$dir/build/$NAME.service" "$unit"; fi
+	if [ -n "$migrate" ]; then
+		unlink_ours "$old"; rm -f build/autostart.desktop
+		echo "note: ts6tray now runs as a service; quit the old tray once so the service can take over"
+	fi
+	if has_manager; then
+		if [ -n "$first" ] || [ -n "$migrate" ]; then
+			systemctl --user daemon-reload && systemctl --user enable --now "$NAME.service" \
+				|| echo "restart: the service did not start; run: systemctl --user enable --now $NAME.service"
+		elif [ -L "$unit" ]; then
+			systemctl --user daemon-reload || true
+			# an update restarts the service only if the user has not disabled it
+			if systemctl --user is-enabled --quiet "$NAME.service" 2>/dev/null; then
+				systemctl --user try-restart "$NAME.service" \
+					|| echo "restart: run: systemctl --user restart $NAME.service"
+			fi
+		else
+			echo "note: the service is disabled; to enable it: systemctl --user enable --now $dir/build/$NAME.service"
+		fi
+	elif [ -n "$first" ] || [ -n "$migrate" ]; then echo "restart: no systemd user session; later run: systemctl --user enable --now $NAME.service"
+	else echo "restart: systemctl --user restart $NAME.service to use the new version"; fi
 }
 
 # Remove exactly what install_files created, with unlink_ours. Must work with the build tools gone.
 remove_files() {
-	unlink_ours "$cfg/autostart/$NAME.desktop"
+	if has_manager; then systemctl --user disable --now "$NAME.service" 2>/dev/null || true; fi
+	unlink_ours "$cfg/systemd/user/graphical-session.target.wants/$NAME.service"
+	unlink_ours "$unit"
+	if has_manager; then systemctl --user daemon-reload || true; fi
+	unlink_ours "$old"
 	unlink_ours "$bin/$NAME"
 }
 # ---- end per-program section -----------------------------------------------------------
