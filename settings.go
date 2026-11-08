@@ -186,7 +186,11 @@ func settingsRender(s settingsState) string {
 	line("  " + settingsTextRow(s, trayAlarmChannelKey))
 	b.WriteString("\nIgnore\n")
 	for _, g := range trayIgnoreGroups {
-		line("  " + settingsBox(s.notif[g.key]) + " " + trayIgnoreLabel(s.ignore))
+		label := g.label
+		if g.key == trayIgnoreKey {
+			label = trayIgnoreLabel(s.ignore)
+		}
+		line("  " + settingsBox(s.notif[g.key]) + " " + label)
 	}
 	line("  " + settingsTextRow(s, trayIgnoreNickKey))
 	b.WriteString("\nDelivery\n")

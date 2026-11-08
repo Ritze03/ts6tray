@@ -715,6 +715,13 @@ func (t *tray) applyIgnore(on bool, list string) {
 	t.ts.SetIgnore(list)
 }
 
+// applyHideQuery tells the TSClient whether to hide server query clients.
+func (t *tray) applyHideQuery(on bool) {
+	if t.ts != nil {
+		t.ts.SetHideQuery(on)
+	}
+}
+
 // soundAlarm plays the siren, or what a test put in its place.
 func (t *tray) soundAlarm() {
 	if t.alarmFn != nil {
@@ -739,6 +746,7 @@ func (t *tray) reloadConfig() error {
 	t.mu.Unlock()
 	t.applyAlarm(notif[trayAlarmKey], alarm)
 	t.applyIgnore(notif[trayIgnoreKey], ignore)
+	t.applyHideQuery(notif[trayHideQueryKey])
 
 	// Switching batching off must not strand whatever is already queued.
 	if !notif[trayOptBatch] && t.batch != nil {
@@ -885,6 +893,7 @@ func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) erro
 	}
 	t.applyAlarm(t.notif[trayAlarmKey], trayReadAlarm(trayConfigPath()))
 	t.applyIgnore(t.notif[trayIgnoreKey], trayReadIgnore(trayConfigPath()))
+	t.applyHideQuery(t.notif[trayHideQueryKey])
 
 	// Watch for the tray host coming and going, so a shell restart re-registers,
 	// and for our own notifications being closed, so we stop replacing them.

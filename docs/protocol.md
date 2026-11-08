@@ -393,6 +393,12 @@ Two shapes. Full form when a client becomes visible (includes `properties`):
   "properties":{ ... }}}
 ```
 
+In the full form, `properties.type` is the client type: 0 is a normal voice client, 1 a server
+query client (observed 2026-11-08; the auth reply's `clientInfos[].properties.type` carries it
+too). It is not the payload's own top-level `type`, which is the move type and is 1 for normal
+clients' moves as well. Later events (short-form moves, `textMessage`) carry no client type, only
+the clientId.
+
 Short form for an actual channel switch or a client leaving:
 
 ```json

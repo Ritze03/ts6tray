@@ -151,6 +151,10 @@ const (
 	movedBanFromServer = 6
 )
 
+// Client properties "type". Not to be confused with clientMoved's own "type",
+// which is the move type.
+const clientTypeQuery = 1
+
 // textMessage.payload.targetMode.
 const (
 	targetPrivate = 1
@@ -174,6 +178,11 @@ type rosterConn struct {
 	// still where it sounded: the alarm fires on the way in, not on every
 	// message while they stay.
 	alarmed map[int]bool
+
+	// query is every client known to be a server query client (client
+	// properties type 1). Later events carry only the clientId, so it is
+	// remembered from the auth snapshot and from a join's properties.
+	query map[int]bool
 }
 
 func newRosterConn() *rosterConn {
@@ -183,6 +192,7 @@ func newRosterConn() *rosterConn {
 		mute:    map[int][2]bool{},
 		cname:   map[string]string{},
 		alarmed: map[int]bool{},
+		query:   map[int]bool{},
 	}
 }
 
@@ -194,6 +204,10 @@ type roster struct {
 	// ignore is the ";"-separated nicknames whose doing makes no notice; ts.go
 	// sets it before every message. The alarm does not look at it.
 	ignore string
+
+	// hideQuery drops what server query clients do, like ignore; ts.go sets it
+	// before every message. The alarm does not look at it either.
+	hideQuery bool
 }
 
 func (r *roster) conn(id int) *rosterConn {
@@ -214,6 +228,7 @@ type rosterProps struct {
 	Nickname    string   `json:"nickname"`
 	InputMuted  flexBool `json:"inputMuted"`
 	OutputMuted flexBool `json:"outputMuted"`
+	Type        flexInt  `json:"type"` // client type: 0 voice, 1 server query
 }
 
 type rosterInvoker struct {
@@ -288,6 +303,7 @@ func (r *roster) auth(payload []byte) {
 				rc.nick[id] = ci.Properties.Nickname
 			}
 			rc.chans[id] = ch
+			rc.query[id] = ci.Properties.Type == clientTypeQuery
 			rc.mute[id] = [2]bool{bool(ci.Properties.InputMuted), bool(ci.Properties.OutputMuted)}
 			if id == rc.clientID {
 				rc.channel = ch
@@ -353,6 +369,7 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 			rc.nick[id] = p.Properties.Nickname
 		}
 		rc.mute[id] = [2]bool{bool(p.Properties.InputMuted), bool(p.Properties.OutputMuted)}
+		rc.query[id] = p.Properties.Type == clientTypeQuery
 	}
 	if p.Invoker != nil && p.Invoker.Nickname != "" {
 		rc.nick[int(p.Invoker.ID)] = p.Invoker.Nickname
@@ -365,6 +382,7 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 	// newChannelId "0" is not a channel: the client left the server.
 	gone := newCh == "0"
 	if gone {
+		defer delete(rc.query, id) // after the ignore check below
 		delete(rc.chans, id)
 		delete(rc.mute, id)
 	} else {
@@ -736,8 +754,11 @@ func nickListHas(list, nick string) bool {
 	return false
 }
 
-// ignored reports whether client id is on the ignore list.
-func (r *roster) ignored(rc *rosterConn, id int) bool { return nickListHas(r.ignore, rc.nick[id]) }
+// ignored reports whether client id is on the ignore list, or is a server query
+// client while those are hidden.
+func (r *roster) ignored(rc *rosterConn, id int) bool {
+	return nickListHas(r.ignore, rc.nick[id]) || (r.hideQuery && rc.query[id])
+}
 
 // matches reports whether a client called nick sitting in a channel named
 // chanName is what the watch is for. The nickname is compared first: it is the

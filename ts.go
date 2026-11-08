@@ -112,11 +112,12 @@ type TSClient struct {
 	alarm alarmWatch // who the alarm listens for; the zero value is nobody
 	// ignore is the ";"-separated nicknames whose doing makes no notice; the
 	// roster is reset on reconnect, so it is kept here and handed in.
-	ignore string
-	up     bool
-	conn   *websocket.Conn
-	key    string // last key we authenticated with / were given
-	press  sync.Mutex
+	ignore    string
+	hideQuery bool // drop what server query clients do (see roster.hideQuery)
+	up        bool
+	conn      *websocket.Conn
+	key       string // last key we authenticated with / were given
+	press     sync.Mutex
 }
 
 // NewTSClient returns a client for addr ("127.0.0.1:5899") storing its API key
@@ -185,6 +186,13 @@ func (c *TSClient) SetAlarm(w alarmWatch) {
 func (c *TSClient) SetIgnore(list string) {
 	c.mu.Lock()
 	c.ignore = list
+	c.mu.Unlock()
+}
+
+// SetHideQuery sets whether what server query clients do is not announced.
+func (c *TSClient) SetHideQuery(on bool) {
+	c.mu.Lock()
+	c.hideQuery = on
 	c.mu.Unlock()
 }
 
@@ -315,7 +323,7 @@ func (c *TSClient) session(ctx context.Context, key string) (authed bool, err er
 		}
 		c.mu.Lock()
 		changed := c.st.Apply(data)
-		c.r.ignore = c.ignore
+		c.r.ignore, c.r.hideQuery = c.ignore, c.hideQuery
 		ns := c.r.apply(data)
 		ns = append(ns, c.r.alarms(c.alarm)...)
 		c.mu.Unlock()

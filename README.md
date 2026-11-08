@@ -310,6 +310,12 @@ skipped), compared case-insensitively. Without the key the list is `serveradmin`
 set to nothing nobody is ignored. The alarm is not affected: a user named in `alarm.nick` still
 sounds it, because the alarm is something you asked for by name.
 
+Server query clients (the ServerQuery logins that bots and admin tools use) can be hidden the
+same way, whatever they are called. That is the **Hide server query clients** switch, on by
+default, `notify.hideQuery` in the config file. ts6tray tells them apart by the client type the
+server reports, not by name, so it knows a query client from the moment you connect or it joins.
+The alarm is not affected here either.
+
 ## Global hotkeys (window manager)
 
 On Wayland TeamSpeak's own hotkeys don't fire while TeamSpeak is unfocused, so bind the
