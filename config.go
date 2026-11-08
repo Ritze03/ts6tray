@@ -136,14 +136,14 @@ var trayAlarmGroups = []trayNotifyGroup{
 }
 
 // trayIgnoreGroups is the switch of the Ignore section, between the alarms and
-// the delivery options. It is on by default, with the server's own account in
+// the delivery options. It is on by default, with nobody in
 // the list (see trayReadIgnore). The TUI labels it with trayIgnoreLabel. The
 // second switch hides server query clients (the ServerQuery logins that bots
 // and admin tools use), which the roster recognises by their client type, not
 // by name; it is on by default too.
 var trayIgnoreGroups = []trayNotifyGroup{
 	{trayIgnoreKey, "Hide what these users do", true, nil},
-	{trayHideQueryKey, "Hide server query clients", true, nil},
+	{trayHideQueryKey, "Filter ServerQuery", true, nil},
 }
 
 // trayNotifyOptions are the delivery switches at the bottom of the same
@@ -351,16 +351,16 @@ func trayAlarmLabel(w alarmWatch) string {
 //	ignore.nick=serveradmin;Bot  whole nicknames separated by ";", compared
 //	                             case-insensitively
 //
-// A missing key means the default, serveradmin; a key that is there but empty
-// means nobody. The alarm is not affected: it is its own explicit opt-in.
+// A missing key or an empty one means nobody. The alarm is not affected: it is its own explicit opt-in.
 //
-// notify.hideQuery=on|off, also on by default, hides the same notices for every
-// server query client, whatever its nickname.
+// notify.hideQuery=on|off ("Filter ServerQuery" in the TUI), on by default, hides
+// the same notices for every server query client (serveradmin and the like),
+// whatever its nickname.
 const (
 	trayIgnoreKey     = "ignore"
 	trayHideQueryKey  = "hideQuery"
 	trayIgnoreNickKey = "ignore.nick"
-	trayIgnoreNickDef = "serveradmin"
+	trayIgnoreNickDef = ""
 )
 
 // trayReadIgnore reads the ignore list. It ignores the on/off switch: that one

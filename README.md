@@ -296,9 +296,9 @@ Both compare case-insensitively and apply on every connected server.
 ## Ignoring users
 
 Notifications caused by certain users can be hidden, matched by nickname: when they join, leave,
-mute, are kicked, message or poke you, or move someone (or you). It is on by default and hides
-`serveradmin`, whose comings and goings are rarely news. In `ts6tray settings` the **Ignore**
-section has the switch and a **Names** row; in the config file:
+mute, are kicked, message or poke you, or move someone (or you). The switch is on by default,
+but the list starts empty, so nobody is hidden until you add a name. In `ts6tray settings` the
+**Ignore** section has the switch and a **Names** row; in the config file:
 
 ```ini
 notify.ignore=on
@@ -306,12 +306,12 @@ ignore.nick=serveradmin;SomeBot
 ```
 
 `ignore.nick` is whole nicknames separated by `;` (spaces around them trimmed, empty entries
-skipped), compared case-insensitively. Without the key the list is `serveradmin`; with the key
-set to nothing nobody is ignored. The alarm is not affected: a user named in `alarm.nick` still
+skipped), compared case-insensitively. Without the key, or with the key
+set to nothing, nobody is ignored. The alarm is not affected: a user named in `alarm.nick` still
 sounds it, because the alarm is something you asked for by name.
 
 Server query clients (the ServerQuery logins that bots and admin tools use) can be hidden the
-same way, whatever they are called. That is the **Hide server query clients** switch, on by
+same way, whatever they are called. That is the **Filter ServerQuery** switch, on by
 default, `notify.hideQuery` in the config file. ts6tray tells them apart by the client type the
 server reports, not by name, so it knows a query client from the moment you connect or it joins.
 If the server hides a query client from your client list, its uid still gives it away: a normal

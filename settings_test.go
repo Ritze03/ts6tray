@@ -44,7 +44,7 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		"\nAlarms\n",
 		"\nDelivery\n",
 		"  Show notifications for   ‹ 3 s ›",
-		"\nIgnore\n  [x] Hide what serveradmin do\n  [x] Hide server query clients\n  Names:   serveradmin   (enter to change)\n",
+		"\nIgnore\n  [x] Nobody yet (set a name below)\n  [x] Filter ServerQuery\n  Names:   not set   (enter to type one)\n",
 		"\nAlarms\n  [ ] Nobody yet (set a name below)\n" +
 			"  Name:    not set   (enter to type one)\n" +
 			"  Channel: Lobby   (enter to change)\n",
@@ -671,15 +671,15 @@ func TestSettingsTypesTheIgnoreList(t *testing.T) {
 	if s.editing != trayIgnoreNickKey || s.edit != trayIgnoreNickDef {
 		t.Fatalf("enter did not open the editor on the list: editing %q edit %q", s.editing, s.edit)
 	}
-	for _, k := range []string{"char:;", "char: ", "char:B", "char:o", "char:t"} {
+	for _, k := range []string{"char:B", "char:o", "char:t"} {
 		s, _ = settingsPress(s, k)
 	}
 	s, act := settingsPress(s, "enter")
-	if act != settingsActWrite || s.ignore != "serveradmin; Bot" {
+	if act != settingsActWrite || s.ignore != "Bot" {
 		t.Fatalf("enter: act %v ignore %q", act, s.ignore)
 	}
 	settingsSave(path, s, nil)
-	if got := trayReadIgnore(path); got != "serveradmin; Bot" {
+	if got := trayReadIgnore(path); got != "Bot" {
 		t.Errorf("the file says %q", got)
 	}
 
@@ -697,12 +697,12 @@ func TestSettingsTypesTheIgnoreList(t *testing.T) {
 	}
 }
 
-// TestIgnoreConfigDefaults: a missing key means on with "serveradmin"; a key
-// that is there but empty means nobody; the switch can be turned off.
+// TestIgnoreConfigDefaults: a missing key means on with nobody listed; a key
+// that is there but empty means nobody too; the switch can be turned off.
 func TestIgnoreConfigDefaults(t *testing.T) {
 	testState(t)
 	path := trayConfigPath()
-	if got := trayReadIgnore(path); got != "serveradmin" {
+	if got := trayReadIgnore(path); got != "" {
 		t.Errorf("missing key: list %q", got)
 	}
 	if !trayReadNotify(path)[trayIgnoreKey] {
