@@ -27,7 +27,8 @@ func trayConfigPath() string { return filepath.Join(filepath.Dir(DefaultKeyPath(
 //
 //	click=mic|speaker
 //	notify.<group>=on|off
-//	alarm.nick=<nickname>, alarm.channel=<text>
+//	alarm.nick=<nicknames>, alarm.channel=<text>
+//	ignore.nick=<nicknames>
 //
 // Anything else — blank lines, "#" comments, garbage, unknown keys — is ignored,
 // and a missing key falls back to its default, so the older one-line
@@ -133,6 +134,13 @@ var trayAlarmGroups = []trayNotifyGroup{
 	{trayAlarmKey, "The watched user enters the lobby", false, []noticeKind{noticeAlarm}},
 }
 
+// trayIgnoreGroups is the switch of the Ignore section, between the alarms and
+// the delivery options. It is on by default, with the server's own account in
+// the list (see trayReadIgnore). The TUI labels it with trayIgnoreLabel.
+var trayIgnoreGroups = []trayNotifyGroup{
+	{trayIgnoreKey, "Hide what these users do", true, nil},
+}
+
 // trayNotifyOptions are the delivery switches at the bottom of the same
 // list. They govern no noticeKind, so kinds is nil and notifyEnabled never
 // sees them; notifyOptOn reads them instead.
@@ -152,8 +160,8 @@ var trayNotifyOptions = []trayNotifyGroup{
 }
 
 // trayNotifySwitches is every switch in screen order — notifications, alarms,
-// delivery: what the config file stores and what the defaults cover.
-var trayNotifySwitches = append(append(append([]trayNotifyGroup{}, trayNotifyGroups...), trayAlarmGroups...), trayNotifyOptions...)
+// ignore, delivery: what the config file stores and what the defaults cover.
+var trayNotifySwitches = append(append(append(append([]trayNotifyGroup{}, trayNotifyGroups...), trayAlarmGroups...), trayIgnoreGroups...), trayNotifyOptions...)
 
 // trayNotifyKindGroup maps a noticeKind back to the switch that governs it.
 var trayNotifyKindGroup = func() map[noticeKind]string {
@@ -284,7 +292,8 @@ func trayTimeoutMillis(v string) int32 {
 // The alarm has an on/off switch in the Alarms section (notify.alarm) and two
 // text keys of its own, both typed in the TUI's Alarms section:
 //
-//	alarm.nick=<nickname>  whose arrival sounds it, the whole nickname
+//	alarm.nick=<nicknames> whose arrival sounds it: whole nicknames, any one of
+//	                       them, separated by ";"
 //	alarm.channel=Lobby    in any channel whose name contains this
 //
 // Both compare case-insensitively. There is no default nickname, so out of
@@ -321,10 +330,51 @@ func trayWriteAlarm(path string, w alarmWatch) error {
 // and where, or what still has to be set.
 func trayAlarmLabel(w alarmWatch) string {
 	switch {
-	case w.nick == "":
+	case len(splitNicks(w.nick)) == 0:
 		return "Nobody yet (set a name below)"
 	case w.channel == "":
 		return "Nowhere yet (set a channel below)"
 	}
 	return fmt.Sprintf("%s joins the %s", w.nick, w.channel)
+}
+
+// --- the ignore list ------------------------------------------------------------
+
+// Notices caused by certain users can be hidden. The switch is notify.ignore,
+// on by default; the list is one text key of the same shape as alarm.nick:
+//
+//	ignore.nick=serveradmin;Bot  whole nicknames separated by ";", compared
+//	                             case-insensitively
+//
+// A missing key means the default, serveradmin; a key that is there but empty
+// means nobody. The alarm is not affected: it is its own explicit opt-in.
+const (
+	trayIgnoreKey     = "ignore"
+	trayIgnoreNickKey = "ignore.nick"
+	trayIgnoreNickDef = "serveradmin"
+)
+
+// trayReadIgnore reads the ignore list. It ignores the on/off switch: that one
+// is read with the rest of the notification switches.
+func trayReadIgnore(path string) string {
+	if v, ok := trayReadConfig(path)[trayIgnoreNickKey]; ok {
+		return v
+	}
+	return trayIgnoreNickDef
+}
+
+// trayWriteIgnore persists the ignore list as it stands, empty included, and
+// leaves every other key alone.
+func trayWriteIgnore(path, list string) error {
+	kv := trayReadConfig(path)
+	kv[trayIgnoreNickKey] = list
+	return trayWriteConfig(path, kv)
+}
+
+// trayIgnoreLabel is the switch's row in the TUI's Ignore section.
+func trayIgnoreLabel(list string) string {
+	if len(splitNicks(list)) == 0 {
+		return "Nobody yet (set a name below)"
+	}
+	return "Hide what " + list + " do"
 }

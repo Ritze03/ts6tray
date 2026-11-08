@@ -190,6 +190,10 @@ func newRosterConn() *rosterConn {
 // resets it to the zero value whenever the connection drops.
 type roster struct {
 	conns map[int]*rosterConn
+
+	// ignore is the ";"-separated nicknames whose doing makes no notice; ts.go
+	// sets it before every message. The alarm does not look at it.
+	ignore string
 }
 
 func (r *roster) conn(id int) *rosterConn {
@@ -374,9 +378,15 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 		if gone {
 			rc.channel = ""
 		}
+		if p.Invoker != nil && r.ignored(rc, int(p.Invoker.ID)) {
+			return nil
+		}
 		return r.selfMoved(rc, int(p.Type), p.Invoker, newCh, escapeRunes(p.Reason, noticeMaxBody))
 	}
 	if rc.channel == "" {
+		return nil
+	}
+	if r.ignored(rc, id) || (p.Invoker != nil && r.ignored(rc, int(p.Invoker.ID))) {
 		return nil
 	}
 
@@ -484,7 +494,7 @@ func (r *roster) applyProps(raw json.RawMessage) []notice {
 	}
 	// No channelId in this event: membership comes from the snapshot plus
 	// clientMoved only (channelGroupInheritedChannelId is a permission field).
-	if rc.channel == "" || rc.chans[id] != rc.channel {
+	if rc.channel == "" || rc.chans[id] != rc.channel || r.ignored(rc, id) {
 		return nil
 	}
 	who := r.nickOf(rc, id)
@@ -622,6 +632,9 @@ func (r *roster) applyText(raw json.RawMessage) []notice {
 	if from == rc.clientID {
 		return nil // our own message echoed back
 	}
+	if r.ignored(rc, from) {
+		return nil
+	}
 	who := r.nickOf(rc, from)
 	body := escapeRunes(p.Message, noticeMaxBody)
 
@@ -687,21 +700,50 @@ func (r *roster) applyStatus(raw json.RawMessage) []notice {
 
 // --- the alarm ------------------------------------------------------------
 
-// alarmWatch is who the alarm listens for: a nickname, matched whole, in any
+// alarmWatch is who the alarm listens for: a nickname (or a list), matched whole, in any
 // channel whose name contains channel. Both compare case-insensitively. The
 // zero value watches for nobody, which is what a switched-off alarm hands in.
 type alarmWatch struct {
-	nick    string
+	nick    string // one nickname, or several separated by ";" (see splitNicks)
 	channel string
 }
 
-func (w alarmWatch) active() bool { return w.nick != "" && w.channel != "" }
+func (w alarmWatch) active() bool { return len(splitNicks(w.nick)) > 0 && w.channel != "" }
+
+// splitNicks is the one reading of a nickname list, shared by the alarm and the
+// ignore list: entries are separated by ";", trimmed, and empty ones skipped.
+func splitNicks(list string) []string {
+	var out []string
+	for _, n := range strings.Split(list, ";") {
+		if n = strings.TrimSpace(n); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// nickListHas reports whether nick is one of the list's entries, whole and
+// case-insensitively. A client with no known nickname is on no list.
+func nickListHas(list, nick string) bool {
+	if nick == "" {
+		return false
+	}
+	for _, n := range splitNicks(list) {
+		if strings.EqualFold(nick, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// ignored reports whether client id is on the ignore list.
+func (r *roster) ignored(rc *rosterConn, id int) bool { return nickListHas(r.ignore, rc.nick[id]) }
 
 // matches reports whether a client called nick sitting in a channel named
 // chanName is what the watch is for. The nickname is compared first: it is the
 // cheap test that fails for nearly everyone.
 func (w alarmWatch) matches(nick, chanName string) bool {
-	return strings.EqualFold(nick, w.nick) &&
+	return nickListHas(w.nick, nick) &&
 		strings.Contains(strings.ToLower(chanName), strings.ToLower(w.channel))
 }
 

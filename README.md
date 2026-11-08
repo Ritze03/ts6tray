@@ -260,19 +260,20 @@ reason is shown only if one is actually present.
 
 ts6tray can sound a siren when one particular person turns up in the lobby. It is off out of
 the box and watches for nobody: open `ts6tray settings`, go to **Alarms → Name**, press enter,
-type their nickname and press enter again (Esc cancels), then switch the alarm on in the row
+type their nickname (or several, separated by `;`) and press enter again (Esc cancels), then switch the alarm on in the row
 above. **Alarms → Channel** sets the channel the same way. The daemon picks all of it up at
 once.
 
 It is stored in `~/.config/ts6tray/config` with the rest:
 
 ```ini
-alarm.nick=UserX
+alarm.nick=UserX;UserY
 alarm.channel=Lobby
 notify.alarm=on
 ```
 
-`alarm.nick` is whose arrival sounds it (the whole nickname; no default, so the alarm watches
+`alarm.nick` is whose arrival sounds it (whole nicknames, any one of them, separated by `;` with spaces around them
+trimmed; no default, so the alarm watches
 for nobody until it is set). `alarm.channel` is text the channel name must contain (default
 `Lobby`, so `Lobby` and `AFK lobby` both count; emptied in the settings, it goes back to
 `Lobby`). `notify.alarm` is the on/off switch (default off), the row above the name, which
@@ -291,6 +292,23 @@ Both compare case-insensitively and apply on every connected server.
   `~/.cache/ts6tray/alarm.wav` and played with the first of `pw-play`, `paplay` or `aplay`
   that works. How loud it really is still follows your system volume.
 - It needs the tray, like every notification: without a session bus there is no alarm.
+
+## Ignoring users
+
+Notifications caused by certain users can be hidden, matched by nickname: when they join, leave,
+mute, are kicked, message or poke you, or move someone (or you). It is on by default and hides
+`serveradmin`, whose comings and goings are rarely news. In `ts6tray settings` the **Ignore**
+section has the switch and a **Names** row; in the config file:
+
+```ini
+notify.ignore=on
+ignore.nick=serveradmin;SomeBot
+```
+
+`ignore.nick` is whole nicknames separated by `;` (spaces around them trimmed, empty entries
+skipped), compared case-insensitively. Without the key the list is `serveradmin`; with the key
+set to nothing nobody is ignored. The alarm is not affected: a user named in `alarm.nick` still
+sounds it, because the alarm is something you asked for by name.
 
 ## Global hotkeys (window manager)
 

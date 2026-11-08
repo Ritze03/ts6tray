@@ -44,6 +44,7 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		"\nAlarms\n",
 		"\nDelivery\n",
 		"  Show notifications for   ‹ 3 s ›",
+		"\nIgnore\n  [x] Hide what serveradmin do\n  Names:   serveradmin   (enter to change)\n",
 		"\nAlarms\n  [ ] Nobody yet (set a name below)\n" +
 			"  Name:    not set   (enter to type one)\n" +
 			"  Channel: Lobby   (enter to change)\n",
@@ -56,6 +57,9 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		label := g.label
 		if g.key == trayAlarmKey {
 			label = trayAlarmLabel(s.alarm)
+		}
+		if g.key == trayIgnoreKey {
+			label = trayIgnoreLabel(s.ignore)
 		}
 		want := "  " + settingsBox(g.def) + " " + label + "\n"
 		if !strings.Contains(out, want) {
@@ -654,5 +658,66 @@ func TestSettingsTimeoutRowCycles(t *testing.T) {
 		if label := "‹ " + trayNotifyTimeoutLabel(want) + " ›"; !strings.Contains(plain(settingsRender(s)), label) {
 			t.Errorf("the row does not show %q", label)
 		}
+	}
+}
+
+// TestSettingsTypesTheIgnoreList: the ignore row edits like the alarm's name,
+// starting from the stored list; emptied, it stays empty in the file.
+func TestSettingsTypesTheIgnoreList(t *testing.T) {
+	s := settingsRowCursor(t, testState(t), trayIgnoreNickKey)
+	path := trayConfigPath()
+
+	s, _ = settingsPress(s, "enter")
+	if s.editing != trayIgnoreNickKey || s.edit != trayIgnoreNickDef {
+		t.Fatalf("enter did not open the editor on the list: editing %q edit %q", s.editing, s.edit)
+	}
+	for _, k := range []string{"char:;", "char: ", "char:B", "char:o", "char:t"} {
+		s, _ = settingsPress(s, k)
+	}
+	s, act := settingsPress(s, "enter")
+	if act != settingsActWrite || s.ignore != "serveradmin; Bot" {
+		t.Fatalf("enter: act %v ignore %q", act, s.ignore)
+	}
+	settingsSave(path, s, nil)
+	if got := trayReadIgnore(path); got != "serveradmin; Bot" {
+		t.Errorf("the file says %q", got)
+	}
+
+	s, _ = settingsPress(s, "enter")
+	for range len(s.edit) {
+		s, _ = settingsPress(s, "backspace")
+	}
+	s, _ = settingsPress(s, "enter")
+	settingsSave(path, s, nil)
+	if got := trayReadIgnore(path); got != "" {
+		t.Errorf("an emptied list reads back as %q", got)
+	}
+	if out := plain(settingsRender(settingsLoad(path))); !strings.Contains(out, "] Nobody yet (set a name below)\n") {
+		t.Errorf("an emptied list does not show as nobody:\n%s", out)
+	}
+}
+
+// TestIgnoreConfigDefaults: a missing key means on with "serveradmin"; a key
+// that is there but empty means nobody; the switch can be turned off.
+func TestIgnoreConfigDefaults(t *testing.T) {
+	testState(t)
+	path := trayConfigPath()
+	if got := trayReadIgnore(path); got != "serveradmin" {
+		t.Errorf("missing key: list %q", got)
+	}
+	if !trayReadNotify(path)[trayIgnoreKey] {
+		t.Errorf("missing key: switch is off")
+	}
+	if err := trayWriteIgnore(path, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := trayReadIgnore(path); got != "" {
+		t.Errorf("empty key: list %q", got)
+	}
+	if err := trayWriteConfig(path, map[string]string{"notify.ignore": "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if trayReadNotify(path)[trayIgnoreKey] {
+		t.Errorf("notify.ignore=off still reads as on")
 	}
 }

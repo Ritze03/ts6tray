@@ -77,6 +77,7 @@ type settingsState struct {
 	notif   map[string]bool
 	timeout string     // one of trayNotifyTimeouts
 	alarm   alarmWatch // alarm.nick and alarm.channel, shown in the Alarms rows
+	ignore  string     // ignore.nick, shown in the Ignore rows
 	cursor  int
 	status  string
 
@@ -87,7 +88,7 @@ type settingsState struct {
 	left int
 
 	// editing is the config key of the text row being typed into — the
-	// alarm's name or channel — or "" for none, and edit is what has been
+	// alarm's name or channel, or the ignore list — or "" for none, and edit is what has been
 	// typed so far. Enter stores it; Esc throws it away.
 	editing string
 	edit    string
@@ -113,6 +114,10 @@ func settingsRowKeys() []string {
 		keys = append(keys, g.key)
 	}
 	keys = append(keys, trayAlarmNickKey, trayAlarmChannelKey)
+	for _, g := range trayIgnoreGroups {
+		keys = append(keys, g.key)
+	}
+	keys = append(keys, trayIgnoreNickKey)
 	for _, g := range trayNotifyOptions {
 		keys = append(keys, g.key)
 	}
@@ -126,6 +131,7 @@ func settingsLoad(path string) settingsState {
 		notif:   trayReadNotify(path),
 		timeout: trayReadTimeout(path),
 		alarm:   trayReadAlarm(path),
+		ignore:  trayReadIgnore(path),
 	}
 }
 
@@ -178,6 +184,11 @@ func settingsRender(s settingsState) string {
 	}
 	line("  " + settingsTextRow(s, trayAlarmNickKey))
 	line("  " + settingsTextRow(s, trayAlarmChannelKey))
+	b.WriteString("\nIgnore\n")
+	for _, g := range trayIgnoreGroups {
+		line("  " + settingsBox(s.notif[g.key]) + " " + trayIgnoreLabel(s.ignore))
+	}
+	line("  " + settingsTextRow(s, trayIgnoreNickKey))
 	b.WriteString("\nDelivery\n")
 	for _, o := range trayNotifyOptions {
 		line("  " + settingsBox(s.notif[o.key]) + " " + o.label)
@@ -192,13 +203,16 @@ func settingsRender(s settingsState) string {
 	return b.String()
 }
 
-// settingsTextRow is one of the alarm's two text rows: what is being typed,
+// settingsTextRow is one of the three text rows (the alarm's two, the ignore list): what is being typed,
 // with a cursor mark since the terminal's own is hidden, or the stored value
 // and how to change it.
 func settingsTextRow(s settingsState, key string) string {
 	label, value := "Name:    ", s.alarm.nick
-	if key == trayAlarmChannelKey {
+	switch key {
+	case trayAlarmChannelKey:
 		label, value = "Channel: ", s.alarm.channel
+	case trayIgnoreNickKey:
+		label, value = "Names:   ", s.ignore
 	}
 	switch {
 	case s.editing == key:
@@ -307,12 +321,15 @@ func settingsPress(s settingsState, key string) (settingsState, settingsAct) {
 			return s, settingsActNone
 		}
 		switch key := settingsRowKeys()[s.cursor]; key {
-		case trayAlarmNickKey, trayAlarmChannelKey:
+		case trayAlarmNickKey, trayAlarmChannelKey, trayIgnoreNickKey:
 			// Start from the stored value, so a typo is one backspace away.
 			s.editing, s.status = key, ""
 			s.edit = s.alarm.nick
-			if key == trayAlarmChannelKey {
+			switch key {
+			case trayAlarmChannelKey:
 				s.edit = s.alarm.channel
+			case trayIgnoreNickKey:
+				s.edit = s.ignore
 			}
 			return s, settingsActNone
 		}
@@ -351,12 +368,15 @@ func settingsEditKey(s settingsState, key string) (settingsState, settingsAct) {
 	switch {
 	case key == "enter":
 		v := strings.TrimSpace(s.edit)
-		if s.editing == trayAlarmChannelKey {
+		switch s.editing {
+		case trayAlarmChannelKey:
 			if v == "" {
 				v = trayAlarmChannelDef
 			}
 			s.alarm.channel = v
-		} else {
+		case trayIgnoreNickKey:
+			s.ignore = v
+		default:
 			s.alarm.nick = v
 		}
 		s.editing, s.edit = "", ""
@@ -427,6 +447,10 @@ func settingsSave(path string, s settingsState, reload func() error) settingsSta
 		return s
 	}
 	if err := trayWriteAlarm(path, s.alarm); err != nil {
+		s.status = "could not save: " + err.Error()
+		return s
+	}
+	if err := trayWriteIgnore(path, s.ignore); err != nil {
 		s.status = "could not save: " + err.Error()
 		return s
 	}

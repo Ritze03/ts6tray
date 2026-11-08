@@ -1059,3 +1059,75 @@ func TestRosterAlarmPresentAtStart(t *testing.T) {
 	self := alarmRoster(t)
 	wantNotices(t, self.alarms(alarmWatch{nick: "Me", channel: "Talk"}), []string{})
 }
+
+// TestSplitNicksAndMatch: the one list reading both features share: ";"
+// separated, trimmed, empties skipped, whole nicknames, any case.
+func TestSplitNicksAndMatch(t *testing.T) {
+	if got := splitNicks(" a ;; B c ;  ;d"); !reflect.DeepEqual(got, []string{"a", "B c", "d"}) {
+		t.Errorf("splitNicks = %q", got)
+	}
+	if got := splitNicks(" ; "); len(got) != 0 {
+		t.Errorf("an empty list split into %q", got)
+	}
+	for _, tc := range []struct {
+		list, nick string
+		want       bool
+	}{
+		{"serveradmin", "ServerAdmin", true},
+		{"a; B c ;d", "b C", true},
+		{"a;b", "ab", false},
+		{"serveradmin", "serveradmin2", false},
+		{"a;;b", "", false},
+		{"", "a", false},
+	} {
+		if got := nickListHas(tc.list, tc.nick); got != tc.want {
+			t.Errorf("nickListHas(%q, %q) = %v", tc.list, tc.nick, got)
+		}
+	}
+}
+
+// TestRosterIgnoreList: what an ignored user does makes no notice (joining,
+// leaving, muting, messaging, or moving someone else) while everybody else
+// still does, and an empty list hides nothing.
+func TestRosterIgnoreList(t *testing.T) {
+	r := alarmRoster(t, [3]any{40, 2, "ServerAdmin"}, [3]any{41, 2, "Pal"}, [3]any{42, 3, "Bot"})
+	r.ignore = "serveradmin; bot"
+	mute := func(id int, v bool) json.RawMessage {
+		return msg(fmt.Sprintf(`{"type":"clientPropertiesUpdated","payload":{"clientId":%d,"connectionId":4,
+			"properties":{"inputMuted":%v}}}`, id, v))
+	}
+	text := func(id int, nick string) json.RawMessage {
+		return msg(fmt.Sprintf(`{"type":"textMessage","payload":{"connectionId":4,"targetMode":1,
+			"message":"hi","invoker":{"id":%d,"nickname":%q}}}`, id, nick))
+	}
+	// Seed the mute baseline, so a flip is news.
+	r.apply(mute(40, false))
+	r.apply(mute(41, false))
+
+	wantNotices(t, r.apply(mute(40, true)), []string{})
+	wantNotices(t, r.apply(text(42, "Bot")), []string{})
+	wantNotices(t, r.apply(alarmMove(42, "3", "2")), []string{})
+	wantNotices(t, r.apply(alarmMove(40, "2", "1")), []string{})
+	wantNotices(t, r.apply(mute(41, true)), []string{"mute | Pal muted their microphone"})
+	wantNotices(t, r.apply(text(41, "Pal")), []string{"privateMsg | Message from Pal | hi"})
+	// Moved by an ignored user: the invoker is the cause.
+	wantNotices(t, r.apply(msg(`{"type":"clientMoved","payload":{"clientId":41,"connectionId":4,
+		"newChannelId":"1","oldChannelId":"2","type":2,"visibility":1,
+		"invoker":{"id":40,"nickname":"ServerAdmin"}}}`)), []string{})
+
+	r.ignore = ""
+	wantNotices(t, r.apply(alarmMove(41, "1", "2")), []string{"join | Pal joined your channel"})
+	wantNotices(t, r.apply(alarmMove(40, "1", "2")), []string{"join | ServerAdmin joined your channel"})
+}
+
+// TestRosterAlarmListAndIgnore: any nick in the alarm's list sounds it, and
+// the ignore list does not hold the alarm back: the alarm is its own opt-in.
+func TestRosterAlarmListAndIgnore(t *testing.T) {
+	w := alarmWatch{nick: "Nille; ServerAdmin ;", channel: "Lobby"}
+	r := alarmRoster(t, [3]any{40, 2, "ServerAdmin"}, [3]any{41, 2, "nille"}, [3]any{42, 2, "Other"})
+	r.ignore = "serveradmin"
+	// The ignored ServerAdmin leaves our channel unannounced, yet still sounds the alarm.
+	wantNotices(t, step(r, w, alarmMove(40, "2", "1")), []string{"alarm | ServerAdmin is in Lobby"})
+	wantNotices(t, step(r, w, alarmMove(41, "2", "1")), []string{"leave | nille left your channel", "alarm | nille is in Lobby"})
+	wantNotices(t, step(r, w, alarmMove(42, "2", "1")), []string{"leave | Other left your channel"})
+}

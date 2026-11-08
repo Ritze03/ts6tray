@@ -703,6 +703,18 @@ func (t *tray) applyAlarm(on bool, w alarmWatch) {
 	t.ts.SetAlarm(w)
 }
 
+// applyIgnore hands the TSClient whose doing to hide: the configured list while
+// the switch is on, nobody while it is off.
+func (t *tray) applyIgnore(on bool, list string) {
+	if t.ts == nil {
+		return
+	}
+	if !on {
+		list = ""
+	}
+	t.ts.SetIgnore(list)
+}
+
 // soundAlarm plays the siren, or what a test put in its place.
 func (t *tray) soundAlarm() {
 	if t.alarmFn != nil {
@@ -719,13 +731,14 @@ func (t *tray) reloadConfig() error {
 	path := trayConfigPath()
 	t.cfgMu.Lock()
 	click, notif, timeout := trayReadClick(path), trayReadNotify(path), trayReadTimeout(path)
-	alarm := trayReadAlarm(path)
+	alarm, ignore := trayReadAlarm(path), trayReadIgnore(path)
 	t.cfgMu.Unlock()
 
 	t.mu.Lock()
 	t.click, t.notif, t.timeout = click, notif, timeout
 	t.mu.Unlock()
 	t.applyAlarm(notif[trayAlarmKey], alarm)
+	t.applyIgnore(notif[trayIgnoreKey], ignore)
 
 	// Switching batching off must not strand whatever is already queued.
 	if !notif[trayOptBatch] && t.batch != nil {
@@ -871,6 +884,7 @@ func RunTray(ctx context.Context, c *TSClient, quit func(), rl *trayReload) erro
 		rl.set(t.reloadConfig)
 	}
 	t.applyAlarm(t.notif[trayAlarmKey], trayReadAlarm(trayConfigPath()))
+	t.applyIgnore(t.notif[trayIgnoreKey], trayReadIgnore(trayConfigPath()))
 
 	// Watch for the tray host coming and going, so a shell restart re-registers,
 	// and for our own notifications being closed, so we stop replacing them.
