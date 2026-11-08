@@ -44,7 +44,7 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		"\nAlarms\n",
 		"\nDelivery\n",
 		"  Show notifications for   ‹ 3 s ›",
-		"\nIgnore\n  [ ] Nobody yet (set a name below)\n  [x] Filter ServerQuery\n  Names:   not set   (enter to type one)\n",
+		"\nIgnore\n  [ ] Nobody yet (set a name below)\n  Names:   not set   (enter to type one)\n  [x] Filter ServerQuery\n",
 		"\nAlarms\n  [ ] Nobody yet (set a name below)\n" +
 			"  Name:    not set   (enter to type one)\n" +
 			"  Channel: Lobby   (enter to change)\n",

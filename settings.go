@@ -116,8 +116,10 @@ func settingsRowKeys() []string {
 	keys = append(keys, trayAlarmNickKey, trayAlarmChannelKey)
 	for _, g := range trayIgnoreGroups {
 		keys = append(keys, g.key)
+		if g.key == trayIgnoreKey {
+			keys = append(keys, trayIgnoreNickKey)
+		}
 	}
-	keys = append(keys, trayIgnoreNickKey)
 	for _, g := range trayNotifyOptions {
 		keys = append(keys, g.key)
 	}
@@ -191,8 +193,10 @@ func settingsRender(s settingsState) string {
 			label = trayIgnoreLabel(s.ignore)
 		}
 		line("  " + settingsBox(s.notif[g.key]) + " " + label)
+		if g.key == trayIgnoreKey {
+			line("  " + settingsTextRow(s, trayIgnoreNickKey))
+		}
 	}
-	line("  " + settingsTextRow(s, trayIgnoreNickKey))
 	b.WriteString("\nDelivery\n")
 	for _, o := range trayNotifyOptions {
 		line("  " + settingsBox(s.notif[o.key]) + " " + o.label)
