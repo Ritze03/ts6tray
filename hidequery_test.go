@@ -69,6 +69,38 @@ func TestRosterHideQueryKeepsAlarm(t *testing.T) {
 	wantNotices(t, step(r, w, alarmMove(50, "2", "1")), []string{"alarm | Robot is in Lobby"})
 }
 
+// TestQueryUID: only a non-empty uid that is not 28 characters ending in "="
+// counts as a query client's.
+func TestQueryUID(t *testing.T) {
+	for uid, want := range map[string]bool{
+		"serveradmin":                  true,
+		"0qfVkxa5jSDN9YKY9TpdIO3Ilq4=": false,
+		"":                             false,
+		"0qfVkxa5jSDN9YKY9TpdIO3Ilq4":  true, // 27 chars
+		"0qfVkxa5jSDN9YKY9TpdIO3Ilq4A": true, // 28 chars, no "="
+	} {
+		if got := queryUID(uid); got != want {
+			t.Errorf("queryUID(%q) = %v, want %v", uid, got, want)
+		}
+	}
+}
+
+// TestRosterHideQueryByUID: a sender the roster has never seen is a query
+// client by the shape of its uid alone; a normal uid or none is not.
+func TestRosterHideQueryByUID(t *testing.T) {
+	text := func(id int, uid string) json.RawMessage {
+		return msg(fmt.Sprintf(`{"type":"textMessage","payload":{"connectionId":4,"targetMode":1,
+			"message":"hi","invoker":{"id":%d,"nickname":"X","uid":%q}}}`, id, uid))
+	}
+	r := queryRoster(t)
+	wantNotices(t, r.apply(text(70, "serveradmin")), []string{})
+	wantNotices(t, r.apply(alarmMove(70, "2", "1")), []string{}) // remembered by id
+	wantNotices(t, r.apply(text(71, "0qfVkxa5jSDN9YKY9TpdIO3Ilq4=")), []string{"privateMsg | Message from X | hi"})
+	wantNotices(t, r.apply(text(72, "")), []string{"privateMsg | Message from X | hi"})
+	r.hideQuery = false
+	wantNotices(t, r.apply(text(70, "serveradmin")), []string{"privateMsg | Message from X | hi"})
+}
+
 // TestHideQueryConfigDefault: the switch is on without a key and reads off
 // when set so.
 func TestHideQueryConfigDefault(t *testing.T) {

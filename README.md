@@ -314,6 +314,8 @@ Server query clients (the ServerQuery logins that bots and admin tools use) can 
 same way, whatever they are called. That is the **Hide server query clients** switch, on by
 default, `notify.hideQuery` in the config file. ts6tray tells them apart by the client type the
 server reports, not by name, so it knows a query client from the moment you connect or it joins.
+If the server hides a query client from your client list, its uid still gives it away: a normal
+client's uid is 28 characters ending in `=`, and a query client's is its login name.
 The alarm is not affected here either.
 
 ## Global hotkeys (window manager)

@@ -397,7 +397,8 @@ In the full form, `properties.type` is the client type: 0 is a normal voice clie
 query client (observed 2026-11-08; the auth reply's `clientInfos[].properties.type` carries it
 too). It is not the payload's own top-level `type`, which is the move type and is 1 for normal
 clients' moves as well. Later events (short-form moves, `textMessage`) carry no client type, only
-the clientId.
+the clientId. A normal client's `uniqueIdentifier` (`uid` on invokers) is base64 of a SHA-1
+(28 chars, ending in `=`); a query client's is its login name, e.g. `serveradmin`.
 
 Short form for an actual channel switch or a client leaving:
 

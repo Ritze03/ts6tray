@@ -155,6 +155,15 @@ const (
 // which is the move type.
 const clientTypeQuery = 1
 
+// queryUID: a normal client's uid is base64 of a SHA-1, always 28 characters
+// ending in "="; any other non-empty uid is a server query client (observed
+// 2026-11-08: its uid is its login name). Empty means unknown, not query. It
+// backs up the client type, which the roster never sees for query clients the
+// server hides from the client list.
+func queryUID(uid string) bool {
+	return uid != "" && !(len(uid) == 28 && strings.HasSuffix(uid, "="))
+}
+
 // textMessage.payload.targetMode.
 const (
 	targetPrivate = 1
@@ -229,11 +238,13 @@ type rosterProps struct {
 	InputMuted  flexBool `json:"inputMuted"`
 	OutputMuted flexBool `json:"outputMuted"`
 	Type        flexInt  `json:"type"` // client type: 0 voice, 1 server query
+	UID         string   `json:"uniqueIdentifier"`
 }
 
 type rosterInvoker struct {
 	ID       flexInt `json:"id"`
 	Nickname string  `json:"nickname"`
+	UID      string  `json:"uid"`
 }
 
 // rosterChannel is one entry of a channel tree, which arrives twice in the same
@@ -303,7 +314,7 @@ func (r *roster) auth(payload []byte) {
 				rc.nick[id] = ci.Properties.Nickname
 			}
 			rc.chans[id] = ch
-			rc.query[id] = ci.Properties.Type == clientTypeQuery
+			rc.query[id] = ci.Properties.Type == clientTypeQuery || queryUID(ci.Properties.UID)
 			rc.mute[id] = [2]bool{bool(ci.Properties.InputMuted), bool(ci.Properties.OutputMuted)}
 			if id == rc.clientID {
 				rc.channel = ch
@@ -369,10 +380,13 @@ func (r *roster) applyMoved(raw json.RawMessage) []notice {
 			rc.nick[id] = p.Properties.Nickname
 		}
 		rc.mute[id] = [2]bool{bool(p.Properties.InputMuted), bool(p.Properties.OutputMuted)}
-		rc.query[id] = p.Properties.Type == clientTypeQuery
+		rc.query[id] = p.Properties.Type == clientTypeQuery || queryUID(p.Properties.UID)
 	}
 	if p.Invoker != nil && p.Invoker.Nickname != "" {
 		rc.nick[int(p.Invoker.ID)] = p.Invoker.Nickname
+	}
+	if p.Invoker != nil && queryUID(p.Invoker.UID) {
+		rc.query[int(p.Invoker.ID)] = true
 	}
 
 	newCh := strconv.Itoa(int(p.NewChannelID))
@@ -646,6 +660,9 @@ func (r *roster) applyText(raw json.RawMessage) []notice {
 	from := int(p.Invoker.ID)
 	if p.Invoker.Nickname != "" {
 		rc.nick[from] = p.Invoker.Nickname
+	}
+	if queryUID(p.Invoker.UID) {
+		rc.query[from] = true
 	}
 	if from == rc.clientID {
 		return nil // our own message echoed back
