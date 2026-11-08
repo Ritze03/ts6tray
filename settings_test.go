@@ -44,7 +44,7 @@ func TestSettingsRenderShowsEveryRow(t *testing.T) {
 		"\nAlarms\n",
 		"\nDelivery\n",
 		"  Show notifications for   ‹ 3 s ›",
-		"\nIgnore\n  [x] Nobody yet (set a name below)\n  [x] Filter ServerQuery\n  Names:   not set   (enter to type one)\n",
+		"\nIgnore\n  [ ] Nobody yet (set a name below)\n  [x] Filter ServerQuery\n  Names:   not set   (enter to type one)\n",
 		"\nAlarms\n  [ ] Nobody yet (set a name below)\n" +
 			"  Name:    not set   (enter to type one)\n" +
 			"  Channel: Lobby   (enter to change)\n",
@@ -697,16 +697,16 @@ func TestSettingsTypesTheIgnoreList(t *testing.T) {
 	}
 }
 
-// TestIgnoreConfigDefaults: a missing key means on with nobody listed; a key
-// that is there but empty means nobody too; the switch can be turned off.
+// TestIgnoreConfigDefaults: a missing key means off with nobody listed; a key
+// that is there but empty means nobody too; the switch can be turned on.
 func TestIgnoreConfigDefaults(t *testing.T) {
 	testState(t)
 	path := trayConfigPath()
 	if got := trayReadIgnore(path); got != "" {
 		t.Errorf("missing key: list %q", got)
 	}
-	if !trayReadNotify(path)[trayIgnoreKey] {
-		t.Errorf("missing key: switch is off")
+	if trayReadNotify(path)[trayIgnoreKey] {
+		t.Errorf("missing key: switch is on")
 	}
 	if err := trayWriteIgnore(path, ""); err != nil {
 		t.Fatal(err)
@@ -714,10 +714,10 @@ func TestIgnoreConfigDefaults(t *testing.T) {
 	if got := trayReadIgnore(path); got != "" {
 		t.Errorf("empty key: list %q", got)
 	}
-	if err := trayWriteConfig(path, map[string]string{"notify.ignore": "off"}); err != nil {
+	if err := trayWriteConfig(path, map[string]string{"notify.ignore": "on"}); err != nil {
 		t.Fatal(err)
 	}
-	if trayReadNotify(path)[trayIgnoreKey] {
-		t.Errorf("notify.ignore=off still reads as on")
+	if !trayReadNotify(path)[trayIgnoreKey] {
+		t.Errorf("notify.ignore=on still reads as off")
 	}
 }

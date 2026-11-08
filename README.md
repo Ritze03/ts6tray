@@ -296,8 +296,8 @@ Both compare case-insensitively and apply on every connected server.
 ## Ignoring users
 
 Notifications caused by certain users can be hidden, matched by nickname: when they join, leave,
-mute, are kicked, message or poke you, or move someone (or you). The switch is on by default,
-but the list starts empty, so nobody is hidden until you add a name. In `ts6tray settings` the
+mute, are kicked, message or poke you, or move someone (or you). The switch is off by default,
+and the list starts empty; turn the switch on and add a name to hide someone. In `ts6tray settings` the
 **Ignore** section has the switch and a **Names** row; in the config file:
 
 ```ini
